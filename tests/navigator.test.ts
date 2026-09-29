@@ -218,4 +218,26 @@ The following skills provide specialized instructions for specific tasks.
     expect(prunedSingle).not.toContain('tavily-search');
     expect(prunedSingle).toContain('The following skill was activated by TypeSafe Jev');
   });
+
+  it('should format active memory guard into tail guidance', () => {
+    const injector = new TailInjector();
+    const guidance = injector.formatTailGuidance({
+      targetSubsystems: ['internal/config'],
+      activatedMemoryGuard: {
+        id: 'mem_read_config',
+        category: 'correction',
+        title: '查看配置优先直接读取配置文件',
+        summary: '当用户要求看配置时直接读取配置文件本身，严禁盲查源码',
+        rule: '直接读取 config.yaml 或 mounted secrets',
+      },
+      riskScore: 0.15,
+      latencyMs: 500,
+      inputTokens: 25000,
+    });
+
+    expect(guidance).toContain('🎯 [System One Navigation Context');
+    expect(guidance).toContain('• 🧠 Active Memory Guard:');
+    expect(guidance).toContain('⚠️ [correction] 当用户要求看配置时直接读取配置文件本身');
+    expect(guidance).toContain('• 📁 Target Subsystem: `internal/config`');
+  });
 });

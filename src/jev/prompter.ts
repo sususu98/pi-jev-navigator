@@ -4,6 +4,7 @@ import {
   JevAnswer,
   DispatchDecision,
   SkillSummary,
+  MemoryGuard,
 } from '../types.js';
 
 export class JevPrompter {
@@ -19,6 +20,7 @@ export class JevPrompter {
     trieDsl: string,
     skills: SkillSummary[],
     safetyRules: string[],
+    memories: MemoryGuard[] = [],
     _userPrompt: string = ''
   ): { questions: Record<string, JevQuestion>; dirCriteriaMap: Record<string, string> } {
     // 1. All codebase directories from trieDsl directly to Jev (No fragile client-side filtering)
@@ -44,7 +46,14 @@ export class JevPrompter {
     }
     skillCriteria['none'] = 'No specialized SOP skill needed, standard general coding';
 
-    // 3. Build safety rule criteria
+    // 3. All active memory guards directly to Jev
+    const memoryCriteria: Record<string, string> = {};
+    for (const m of memories) {
+      memoryCriteria[m.id] = `[${m.category}] ${m.summary.slice(0, 100)}`;
+    }
+    memoryCriteria['none'] = 'No specific memory constraint or past correction applies to this task';
+
+    // 4. Build safety rule criteria
     const ruleCriteria: Record<string, string> = {};
     for (let i = 0; i < safetyRules.length; i++) {
       const r = safetyRules[i];
@@ -94,6 +103,13 @@ export class JevPrompter {
           '3: High-risk architectural change, database schema migration, or breaking API modification',
         ],
       },
+      // Q6: Active Memory Guard Choice
+      q6_memory_guard: {
+        type: 'choice',
+        instructions:
+          'If a past correction, user preference, or operational constraint in `memory_guards` applies to `user_task`, which guard must be enforced?',
+        criteria: memoryCriteria,
+      },
     };
 
     return { questions, dirCriteriaMap };
@@ -107,7 +123,8 @@ export class JevPrompter {
     skills: SkillSummary[],
     dirCriteriaMap: Record<string, string>,
     latencyMs: number,
-    inputTokens: number
+    inputTokens: number,
+    memories: MemoryGuard[] = []
   ): DispatchDecision {
     const decision: DispatchDecision = {
       latencyMs,
@@ -174,6 +191,15 @@ export class JevPrompter {
     const q5 = answers['q5_complexity_risk'];
     if (q5 && q5.type === 'score') {
       decision.riskScore = q5.score;
+    }
+
+    // 5. Memory Guard Extraction (Winner choice !== 'none' and confidence >= 0.35)
+    const q6 = answers['q6_memory_guard'] || answers['q7_memory_guard'];
+    if (q6 && q6.type === 'choice' && q6.choice !== 'none' && (q6.confidence ?? 1) >= 0.35) {
+      const matchedMemory = memories.find((m) => m.id === q6.choice);
+      if (matchedMemory) {
+        decision.activatedMemoryGuard = matchedMemory;
+      }
     }
 
     return decision;

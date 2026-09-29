@@ -16,6 +16,7 @@ import type {
 import { CodeGraphExtractor } from './graph/codegraph.js';
 import { GitNexusAdapter } from './graph/gitnexus-adapter.js';
 import { SkillCollector } from './skills/collector.js';
+import { MemoryCollector } from './memory/collector.js';
 import { TTLStore } from './cache/ttl-store.js';
 import { JevClient } from './jev/client.js';
 import { JevPrompter } from './jev/prompter.js';
@@ -28,6 +29,7 @@ export class JevNavigator {
   private extractor: CodeGraphExtractor;
   private gitnexus: GitNexusAdapter;
   private collector: SkillCollector;
+  private memoryCollector: MemoryCollector;
   private ttlStore: TTLStore;
   private client: JevClient;
   private prompter: JevPrompter;
@@ -46,6 +48,7 @@ export class JevNavigator {
     this.extractor = new CodeGraphExtractor();
     this.gitnexus = new GitNexusAdapter();
     this.collector = new SkillCollector();
+    this.memoryCollector = new MemoryCollector();
     this.ttlStore = new TTLStore(this.projectRoot, this.config.cacheTtlDays);
     this.client = new JevClient(this.config.endpoint, this.config.model, this.config.apiKey);
     this.prompter = new JevPrompter();
@@ -98,10 +101,12 @@ export class JevNavigator {
     try {
       const graph = this.getOrGenerateCodeGraph();
       const skills = this.collector.collectSkills(this.projectRoot);
+      const memories = this.memoryCollector.collectMemories(this.projectRoot);
       const { questions, dirCriteriaMap } = this.prompter.buildQuestions(
         graph.dsl,
         skills,
         safetyRules,
+        memories,
         userPrompt
       );
 
@@ -118,7 +123,8 @@ export class JevNavigator {
         skills,
         dirCriteriaMap,
         result.latencyMs,
-        result.response.usage.input_tokens
+        result.response.usage.input_tokens,
+        memories
       );
 
       this.logDecisionToFile(userPrompt, decision, sessionMeta);
@@ -175,6 +181,13 @@ export class JevNavigator {
         input_tokens: decision.inputTokens,
         target_subsystems: decision.targetSubsystems,
         activated_skill: decision.activatedSkill || null,
+        activated_memory_guard: decision.activatedMemoryGuard
+          ? {
+              category: decision.activatedMemoryGuard.category,
+              title: decision.activatedMemoryGuard.title,
+              summary: decision.activatedMemoryGuard.summary,
+            }
+          : null,
         risk_score: decision.riskScore,
         confidence: decision.confidence,
         raw_answers: decision.rawAnswers,
@@ -219,6 +232,7 @@ export class JevNavigator {
     const gitCtx = resolveGitContext(this.projectRoot);
     const graph = this.getOrGenerateCodeGraph();
     const skills = this.collector.collectSkills(this.projectRoot);
+    const memories = this.memoryCollector.collectMemories(this.projectRoot);
     const gitnexusStatus = this.gitnexus.checkStatus(this.projectRoot);
     const hasKey = !!this.client.getApiKey();
 
@@ -234,6 +248,7 @@ export class JevNavigator {
       codebaseFilesIndexed: graph.totalFiles,
       estimatedTokens: graph.estimatedTokens,
       skillsCollected: skills.length,
+      memoriesCollected: memories.length,
       cached: graph.fromCache,
     };
   }
@@ -293,10 +308,19 @@ export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
       if (decision) {
         currentTurnDecision = decision;
         if (ctx.hasUI) {
-          ctx.ui.notify(
-            `⚡ Jev Routed: ${decision.targetSubsystems?.join(', ') || 'General'}${decision.activatedSkill ? ` | Skill: ${decision.activatedSkill}` : ''} (${decision.latencyMs?.toFixed(0)}ms)`,
-            'info'
-          );
+          const parts: string[] = [];
+          if (decision.targetSubsystems && decision.targetSubsystems.length > 0) {
+            parts.push(`Subsystem: ${decision.targetSubsystems.join(', ')}`);
+          } else {
+            parts.push('Subsystem: General');
+          }
+          if (decision.activatedSkill) {
+            parts.push(`Skill: ${decision.activatedSkill}`);
+          }
+          if (decision.activatedMemoryGuard) {
+            parts.push(`Guard: [${decision.activatedMemoryGuard.category}] ${decision.activatedMemoryGuard.title.slice(0, 30)}`);
+          }
+          ctx.ui.notify(`⚡ Jev Routed: ${parts.join(' | ')} (${decision.latencyMs?.toFixed(0)}ms)`, 'info');
         }
 
         // Prune System Prompt: strip unactivated skills to save thousands of tokens

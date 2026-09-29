@@ -40,6 +40,10 @@ export class TailInjector {
       lines.push(`• 🚨 Enforced Constraint: ${decision.safetyRules.join('; ')}`);
     }
 
+    if (decision.activatedMemoryGuard) {
+      lines.push(`• 🧠 Active Memory Guard:\n  ⚠️ [${decision.activatedMemoryGuard.category}] ${decision.activatedMemoryGuard.summary}`);
+    }
+
     if (decision.riskScore !== undefined) {
       const riskEmoji = decision.riskScore >= 2 ? '⚠️ High' : decision.riskScore >= 1 ? '⚡ Moderate' : '✅ Low';
       lines.push(`• 📊 Architecture Risk Level: ${decision.riskScore} (${riskEmoji})`);

@@ -26,6 +26,7 @@ export interface JevState {
   user_task: string;
   codebase_trie_map?: string;
   skills_catalog?: string[];
+  memory_guards?: string[];
   safety_rules?: string[];
   context_metadata?: Record<string, unknown>;
 }
@@ -80,11 +81,21 @@ export interface SkillSummary {
   path: string;
 }
 
+export interface MemoryGuard {
+  id: string;
+  category: 'correction' | 'preference' | 'failure' | 'convention' | 'tool-quirk' | 'insight' | 'memory';
+  title: string;
+  summary: string;
+  rule: string;
+  project?: string;
+}
+
 export interface DispatchDecision {
   targetSubsystems?: string[];
   targetFiles?: string[];
   activatedSkill?: string;
   activatedSkillPath?: string;
+  activatedMemoryGuard?: MemoryGuard | null;
   safetyRules?: string[];
   riskScore?: number;
   confidence?: number;
