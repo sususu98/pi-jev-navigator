@@ -6,8 +6,9 @@
   "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch",
+    "build": "tsgo || tsc",
+    "typecheck": "tsgo --noEmit || tsc --noEmit",
+    "watch": "tsgo --watch || tsc --watch",
     "test": "bun test",
     "format": "prettier --write 'src/**/*.ts' 'tests/**/*.ts'"
   },
