@@ -7,6 +7,7 @@ export interface GitNexusStatus {
   repoPath: string;
   commitSha?: string;
   totalFiles?: number;
+  runner: 'native' | 'bunx' | 'npx' | 'unavailable';
 }
 
 export class GitNexusAdapter {
@@ -16,6 +17,7 @@ export class GitNexusAdapter {
   public checkStatus(projectRoot: string): GitNexusStatus {
     const gitnexusDir = path.join(projectRoot, '.gitnexus');
     const isIndexed = fs.existsSync(gitnexusDir) && fs.existsSync(path.join(gitnexusDir, 'meta.json'));
+    const runner = this.resolveRunner();
 
     let commitSha: string | undefined;
     if (isIndexed) {
@@ -32,16 +34,20 @@ export class GitNexusAdapter {
       isIndexed,
       repoPath: projectRoot,
       commitSha,
+      runner: runner ? runner.type : 'unavailable',
     };
   }
 
   /**
-   * Trigger GitNexus indexing using bunx or npx
+   * Trigger GitNexus indexing using the best available runner (native -> bunx -> npx)
    */
   public analyze(projectRoot: string): boolean {
+    const runner = this.resolveRunner();
+    if (!runner) return false;
+
     try {
-      const runner = this.resolveRunner();
-      const res = spawnSync(runner, ['gitnexus', 'analyze', '--index-only', '.'], {
+      const args = [...runner.baseArgs, 'analyze', '--index-only', '.'];
+      const res = spawnSync(runner.bin, args, {
         cwd: projectRoot,
         encoding: 'utf-8',
         stdio: 'pipe',
@@ -57,9 +63,12 @@ export class GitNexusAdapter {
    * Query 360-degree context for a specific symbol from GitNexus
    */
   public queryContext(symbolName: string, projectRoot: string): string | null {
+    const runner = this.resolveRunner();
+    if (!runner) return null;
+
     try {
-      const runner = this.resolveRunner();
-      const res = spawnSync(runner, ['gitnexus', 'context', symbolName], {
+      const args = [...runner.baseArgs, 'context', symbolName];
+      const res = spawnSync(runner.bin, args, {
         cwd: projectRoot,
         encoding: 'utf-8',
         stdio: 'pipe',
@@ -78,9 +87,12 @@ export class GitNexusAdapter {
    * Query blast radius / impact for a symbol from GitNexus
    */
   public queryImpact(symbolName: string, projectRoot: string): string | null {
+    const runner = this.resolveRunner();
+    if (!runner) return null;
+
     try {
-      const runner = this.resolveRunner();
-      const res = spawnSync(runner, ['gitnexus', 'impact', symbolName], {
+      const args = [...runner.baseArgs, 'impact', symbolName];
+      const res = spawnSync(runner.bin, args, {
         cwd: projectRoot,
         encoding: 'utf-8',
         stdio: 'pipe',
@@ -95,12 +107,34 @@ export class GitNexusAdapter {
     }
   }
 
-  private resolveRunner(): string {
+  /**
+   * Resolve the fastest available runner in order:
+   * 1. Global binary `gitnexus` (Direct native execution, ~5ms)
+   * 2. `bunx gitnexus` (Fast cache execution, ~100ms)
+   * 3. `npx gitnexus` (Standard npm fallback)
+   */
+  public resolveRunner(): { bin: string; baseArgs: string[]; type: 'native' | 'bunx' | 'npx' } | null {
+    try {
+      execSync('which gitnexus', { stdio: 'ignore' });
+      return { bin: 'gitnexus', baseArgs: [], type: 'native' };
+    } catch {
+      // Continue
+    }
+
     try {
       execSync('which bunx', { stdio: 'ignore' });
-      return 'bunx';
+      return { bin: 'bunx', baseArgs: ['gitnexus'], type: 'bunx' };
     } catch {
-      return 'npx';
+      // Continue
     }
+
+    try {
+      execSync('which npx', { stdio: 'ignore' });
+      return { bin: 'npx', baseArgs: ['gitnexus'], type: 'npx' };
+    } catch {
+      // Unavailable
+    }
+
+    return null;
   }
 }
