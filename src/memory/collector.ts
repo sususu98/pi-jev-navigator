@@ -15,8 +15,8 @@ export interface MemoryGuard {
   score?: number;
 }
 
-interface InternalMemoryCluster {
-  canonicalId: string;
+interface InternalMemoryEntry {
+  id: string;
   category: MemoryGuard['category'];
   title: string;
   summary: string;
@@ -32,41 +32,17 @@ export class MemoryCollector {
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache
 
   /**
-   * Normalize title into a semantic cluster key to aggregate repeated corrections
+   * Pure mechanical normalization of memory title for exact deduplication (No hardcoded keyword heuristics)
    */
-  private normalizeClusterKey(title: string): string {
-    const lower = title.toLowerCase();
-
-    // Specific high-frequency operational patterns
-    if (lower.includes('worktree') || lower.includes('工作树') || lower.includes('分支聚焦')) {
-      return 'cluster_git_worktree_boundary';
-    }
-    if (lower.includes('grep') || lower.includes('find') || lower.includes('ripgrep') || lower.includes('fd')) {
-      return 'cluster_cli_grep_fd_rg';
-    }
-    if (lower.includes('敏感词') || lower.includes('config.yaml') || lower.includes('查看配置') || lower.includes('配置文件')) {
-      return 'cluster_config_direct_read';
-    }
-    if (lower.includes('8317') || lower.includes('local cpa') || lower.includes('local-cpa')) {
-      return 'cluster_local_cpa_service';
-    }
-    if (lower.includes('sleep') || lower.includes('轮询') || lower.includes('等待 ci')) {
-      return 'cluster_no_sleep_polling';
-    }
-    if (lower.includes('management') || lower.includes('/v0/management') || lower.includes('v8')) {
-      return 'cluster_cpa_management_v8';
-    }
-
-    // Default normalized stem
-    const clean = lower
+  private getDeduplicationKey(title: string): string {
+    return title
+      .toLowerCase()
       .replace(/[^\u4e00-\u9fa5a-z0-9]/g, '')
-      .slice(0, 16);
-
-    return clean || 'cluster_general';
+      .slice(0, 32);
   }
 
   /**
-   * Parse a memory markdown block with metadata (created, last, project64)
+   * Parse a memory markdown block with objective metadata (created, last, project64)
    */
   private parseBlockWithMeta(
     block: string,
@@ -130,7 +106,8 @@ export class MemoryCollector {
   }
 
   /**
-   * Collect active memory constraints dynamically ranked by Frequency, Recency, and Project Relevance
+   * Collect active memory constraints across Hermes memory store and project memory
+   * Pure metadata-driven ranking (Recency + Category Hierarchy + Project Scope) with ZERO client-side keyword heuristics.
    */
   public collectMemories(projectRoot: string = process.cwd(), maxTotal: number = 50): MemoryGuard[] {
     const gitCtx = resolveGitContext(projectRoot);
@@ -153,7 +130,7 @@ export class MemoryCollector {
       { path: path.join(homeDir, '.pi', 'agent', 'pi-hermes-memory', 'MEMORY.md'), defaultCategory: 'convention' as const },
     ];
 
-    const clusters = new Map<string, InternalMemoryCluster>();
+    const entriesMap = new Map<string, InternalMemoryEntry>();
 
     for (const item of memoryFiles) {
       if (!fs.existsSync(item.path)) continue;
@@ -165,17 +142,19 @@ export class MemoryCollector {
           const parsed = this.parseBlockWithMeta(block, item.defaultCategory);
           if (!parsed) continue;
 
-          // Filter out explicitly mismatched other projects
+          // Project boundary filter: only keep target project and global memories
           if (parsed.project !== 'global' && parsed.project !== targetProject && targetProject !== 'default') {
             continue;
           }
 
-          const clusterKey = this.normalizeClusterKey(parsed.cleanTitle);
-          const existing = clusters.get(clusterKey);
+          const dedupKey = this.getDeduplicationKey(parsed.cleanTitle);
+          if (!dedupKey) continue;
+
+          const existing = entriesMap.get(dedupKey);
 
           if (existing) {
             existing.frequency += 1;
-            // Upgrade category if this occurrence is a higher priority [correction] / [preference]
+            // Upgrade category if this occurrence is higher priority
             if (parsed.category === 'correction' || (parsed.category === 'preference' && existing.category !== 'correction')) {
               existing.category = parsed.category;
             }
@@ -193,8 +172,8 @@ export class MemoryCollector {
               .replace(/_+/g, '_')
               .replace(/^_|_$/g, '');
 
-            clusters.set(clusterKey, {
-              canonicalId: `mem_${slugBase || clusterKey.slice(0, 20)}`,
+            entriesMap.set(dedupKey, {
+              id: `mem_${slugBase || dedupKey.slice(0, 20)}`,
               category: parsed.category,
               title: parsed.cleanTitle.slice(0, 60),
               summary: parsed.summary,
@@ -211,30 +190,30 @@ export class MemoryCollector {
       }
     }
 
-    // Dynamic Multi-Dimensional Frequency & Recency Scoring
+    // Pure objective metadata scoring: Category Hierarchy + Recency Decay + Project Relevance
     const now = Date.now();
-    for (const c of clusters.values()) {
+    for (const e of entriesMap.values()) {
       let score = 0;
 
       // 1. Category Baseline Weight
-      if (c.category === 'correction') score += 12;
-      else if (c.category === 'preference') score += 10;
-      else if (c.category === 'failure') score += 7;
-      else if (c.category === 'tool-quirk') score += 5;
-      else if (c.category === 'convention') score += 4;
+      if (e.category === 'correction') score += 12;
+      else if (e.category === 'preference') score += 10;
+      else if (e.category === 'failure') score += 7;
+      else if (e.category === 'tool-quirk') score += 5;
+      else if (e.category === 'convention') score += 4;
       else score += 2;
 
-      // 2. Frequency Weight: each repeated correction / occurrence significantly boosts priority
-      score += Math.min(36, (c.frequency - 1) * 4);
+      // 2. Natural Occurrence Frequency (raw count of duplicate records in memory store)
+      score += Math.min(30, (e.frequency - 1) * 3);
 
       // 3. Project Relevance Bonus
-      if (c.project === targetProject) {
+      if (e.project === targetProject) {
         score += 10;
       }
 
-      // 4. Recency Decay Bonus
-      if (c.latestDate) {
-        const d = new Date(c.latestDate).getTime();
+      // 4. Recency Decay (Date arithmetic only)
+      if (e.latestDate) {
+        const d = new Date(e.latestDate).getTime();
         const daysAgo = Math.max(0, (now - d) / (1000 * 60 * 60 * 24));
         if (daysAgo <= 1) score += 12;
         else if (daysAgo <= 3) score += 8;
@@ -243,21 +222,21 @@ export class MemoryCollector {
         else if (daysAgo <= 30) score += 1;
       }
 
-      c.score = score;
+      e.score = score;
     }
 
-    const sortedGuards: MemoryGuard[] = Array.from(clusters.values())
+    const sortedGuards: MemoryGuard[] = Array.from(entriesMap.values())
       .sort((a, b) => b.score - a.score)
-      .map((c) => ({
-        id: c.canonicalId,
-        category: c.category,
-        title: c.title,
-        summary: c.summary,
-        rule: c.rule,
-        project: c.project,
-        frequency: c.frequency,
-        latestDate: c.latestDate,
-        score: c.score,
+      .map((e) => ({
+        id: e.id,
+        category: e.category,
+        title: e.title,
+        summary: e.summary,
+        rule: e.rule,
+        project: e.project,
+        frequency: e.frequency,
+        latestDate: e.latestDate,
+        score: e.score,
       }));
 
     this.memoryCache = {
