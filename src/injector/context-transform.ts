@@ -10,7 +10,6 @@ export function transformNavigationContext(
   guidance?: string
 ): ContextWithSystemEvent['messages'] {
   if (!decision || decision.bypassed || config.enableTailInjection === false) return messages;
-  // Never prune a catalog without somewhere to deliver the selected skill's path.
   let userIndex = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'user') { userIndex = i; break; }
@@ -30,14 +29,8 @@ export function transformNavigationContext(
           skills: injector.pruneSystemPromptSkills(message.sections.skills, decision.activatedSkill),
         };
       }
-      if (typeof message.content === 'string') {
+      if (!message.sections && typeof message.content === 'string') {
         updated.content = injector.pruneSystemPromptSkills(message.content, decision.activatedSkill);
-      } else if (Array.isArray(message.content)) {
-        updated.content = message.content.map((part) =>
-          part.type === 'text'
-            ? { ...part, text: injector.pruneSystemPromptSkills(part.text, decision.activatedSkill) }
-            : part
-        );
       }
       result[i] = updated;
     }
