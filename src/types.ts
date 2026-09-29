@@ -98,6 +98,7 @@ export interface DispatchDecision {
   activatedSkill?: string;
   activatedSkillPath?: string;
   activatedMemoryGuard?: MemoryGuard | null;
+  activatedMemoryGuards?: MemoryGuard[];
   safetyRules?: string[];
   riskScore?: number;
   confidence?: number;

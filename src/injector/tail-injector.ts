@@ -40,9 +40,16 @@ export class TailInjector {
       lines.push(`• 🚨 Enforced Constraint: ${decision.safetyRules.join('; ')}`);
     }
 
-    if (decision.activatedMemoryGuard) {
-      lines.push(`• 🧠 Active Memory Guard:\n  ⚠️ [${decision.activatedMemoryGuard.category}] ${decision.activatedMemoryGuard.summary}`);
+    const activeGuards = decision.activatedMemoryGuards || (decision.activatedMemoryGuard ? [decision.activatedMemoryGuard] : []);
+    if (activeGuards.length > 0) {
+      lines.push(`• 🧠 Active Memory Guard:`);
+      for (const g of activeGuards) {
+        lines.push(`  ⚠️ [${g.category}] ${g.summary}`);
+      }
     }
+
+    // Always enforce global CLI invariants at the navigation HUD
+    lines.push(`• 🚨 Operational Guard: 管道与文本搜索一律使用 rg 禁 grep；文件查找一律使用 fd 禁 find。`);
 
     if (decision.riskScore !== undefined) {
       const riskEmoji = decision.riskScore >= 2 ? '⚠️ High' : decision.riskScore >= 1 ? '⚡ Moderate' : '✅ Low';

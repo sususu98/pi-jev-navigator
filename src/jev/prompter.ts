@@ -183,12 +183,27 @@ export class JevPrompter {
       decision.riskScore = q4.score;
     }
 
-    // 5. Memory Guard Extraction (Winner choice !== 'none' and confidence >= 0.35)
+    // 5. Memory Guard Extraction (Winner + Secondary probabilities >= 0.25)
     const q5 = answers['q5_memory_guard'] || answers['q6_memory_guard'] || answers['q7_memory_guard'];
-    if (q5 && q5.type === 'choice' && q5.choice !== 'none' && (q5.confidence ?? 1) >= 0.35) {
-      const matchedMemory = memories.find((m) => m.id === q5.choice);
-      if (matchedMemory) {
-        decision.activatedMemoryGuard = matchedMemory;
+    if (q5 && q5.type === 'choice') {
+      const guards: MemoryGuard[] = [];
+      if (q5.choice !== 'none' && (q5.confidence ?? 1) >= 0.35) {
+        const winner = memories.find((m) => m.id === q5.choice);
+        if (winner) guards.push(winner);
+      }
+      if (q5.probabilities) {
+        for (const [key, prob] of Object.entries(q5.probabilities)) {
+          if (key !== q5.choice && key !== 'none' && prob >= 0.25) {
+            const secondary = memories.find((m) => m.id === key);
+            if (secondary && !guards.some((g) => g.id === secondary.id)) {
+              guards.push(secondary);
+            }
+          }
+        }
+      }
+      if (guards.length > 0) {
+        decision.activatedMemoryGuards = guards;
+        decision.activatedMemoryGuard = guards[0];
       }
     }
 
