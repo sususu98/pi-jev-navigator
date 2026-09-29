@@ -82,6 +82,20 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
       if (runs.get(key) !== run || ctx.signal?.aborted || !decision || decision.bypassed) return;
       run.decision = decision;
       run.guidance = new TailInjector().formatTailGuidance(decision);
+
+      // Native Pi System Prompt Pruning:
+      // Natively filter event.systemPromptOptions.skills so Pi's built-in prompt builder
+      // only includes the activated skill, saving thousands of tokens without fragile string hacking.
+      if (config.enableSystemPromptPruning !== false && config.enableSkills !== false && event.systemPromptOptions?.skills) {
+        if (decision.activatedSkill && decision.activatedSkill !== 'none') {
+          event.systemPromptOptions.skills = event.systemPromptOptions.skills.filter(
+            (s) => s.name === decision.activatedSkill
+          );
+        } else {
+          event.systemPromptOptions.skills = [];
+        }
+      }
+
       if (ctx.hasUI) {
         const parts = [`Subsystem: ${decision.targetSubsystems?.join(', ') || 'General'}`];
         if (decision.activatedSkill) parts.push(`Skill: ${decision.activatedSkill}`);

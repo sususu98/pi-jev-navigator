@@ -25,13 +25,19 @@ export function transformNavigationContext(
       if (message.role !== 'system') continue;
       const updated = { ...message };
       if (typeof message.sections?.skills === 'string') {
-        updated.sections = { ...message.sections, skills: injector.pruneSystemPromptSkills(message.sections.skills) };
+        updated.sections = {
+          ...message.sections,
+          skills: injector.pruneSystemPromptSkills(message.sections.skills, decision.activatedSkill),
+        };
       }
-      // Legacy/forced prompts are opaque system text. Do NOT recurse into tools or other sections.
-      if (!message.sections) {
-        updated.content = typeof message.content === 'string'
-          ? injector.pruneSystemPromptSkills(message.content)
-          : message.content.map((part) => ({ ...part, text: injector.pruneSystemPromptSkills(part.text) }));
+      if (typeof message.content === 'string') {
+        updated.content = injector.pruneSystemPromptSkills(message.content, decision.activatedSkill);
+      } else if (Array.isArray(message.content)) {
+        updated.content = message.content.map((part) =>
+          part.type === 'text'
+            ? { ...part, text: injector.pruneSystemPromptSkills(part.text, decision.activatedSkill) }
+            : part
+        );
       }
       result[i] = updated;
     }
