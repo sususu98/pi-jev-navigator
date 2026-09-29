@@ -90,6 +90,8 @@ export interface MemoryGuard {
   project?: string;
 }
 
+export type ExecutionMode = 'auto' | 'parallel' | 'unified';
+
 export interface DispatchDecision {
   targetSubsystems?: string[];
   targetFiles?: string[];
@@ -102,6 +104,9 @@ export interface DispatchDecision {
   rawAnswers?: Record<string, JevAnswer>;
   latencyMs?: number;
   inputTokens?: number;
+  pipelineMode?: ExecutionMode;
+  bypassed?: boolean;
+  bypassReason?: string;
 }
 
 export interface JevNavigatorConfig {
@@ -110,6 +115,13 @@ export interface JevNavigatorConfig {
   endpoint?: string;
   model?: string;
   enableTailInjection?: boolean;
+  enableSubsystems?: boolean;
+  enableSkills?: boolean;
+  enableMemories?: boolean;
+  enableSystemPromptPruning?: boolean;
+  executionMode?: ExecutionMode;
+  timeoutMs?: number;
+  maxMemoryGuards?: number;
   cacheTtlDays?: number;
   logDecisions?: boolean;
 }

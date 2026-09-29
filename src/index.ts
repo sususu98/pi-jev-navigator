@@ -21,11 +21,13 @@ import { TTLStore } from './cache/ttl-store.js';
 import { JevClient } from './jev/client.js';
 import { JevPrompter } from './jev/prompter.js';
 import { TailInjector } from './injector/tail-injector.js';
+import { JevConfigStore } from './config/config-store.js';
+import { JevDualPipeline } from './jev/pipeline.js';
 import { resolveGitContext, GitContext } from './graph/git.js';
-import { JevNavigatorConfig, DispatchDecision } from './types.js';
+import { JevNavigatorConfig, DispatchDecision, ExecutionMode } from './types.js';
 
 export class JevNavigator {
-  private config: JevNavigatorConfig;
+  private configStore: JevConfigStore;
   private extractor: CodeGraphExtractor;
   private gitnexus: GitNexusAdapter;
   private collector: SkillCollector;
@@ -33,26 +35,32 @@ export class JevNavigator {
   private ttlStore: TTLStore;
   private client: JevClient;
   private prompter: JevPrompter;
+  private pipeline: JevDualPipeline;
   private injector: TailInjector;
   private projectRoot: string;
 
   constructor(projectRoot: string = process.cwd(), config: JevNavigatorConfig = {}) {
     this.projectRoot = projectRoot;
-    this.config = {
-      enableTailInjection: true,
-      cacheTtlDays: 7,
-      logDecisions: true,
-      ...config,
-    };
+    this.configStore = new JevConfigStore(this.projectRoot, config);
+    const activeConfig = this.configStore.get();
 
     this.extractor = new CodeGraphExtractor();
     this.gitnexus = new GitNexusAdapter();
     this.collector = new SkillCollector();
     this.memoryCollector = new MemoryCollector();
-    this.ttlStore = new TTLStore(this.projectRoot, this.config.cacheTtlDays);
-    this.client = new JevClient(this.config.endpoint, this.config.model, this.config.apiKey);
+    this.ttlStore = new TTLStore(this.projectRoot, activeConfig.cacheTtlDays);
+    this.client = new JevClient(activeConfig.endpoint, activeConfig.model, activeConfig.apiKey);
     this.prompter = new JevPrompter();
+    this.pipeline = new JevDualPipeline(this.client, this.prompter);
     this.injector = new TailInjector();
+  }
+
+  public getConfigStore(): JevConfigStore {
+    return this.configStore;
+  }
+
+  public getConfig(): JevNavigatorConfig {
+    return this.configStore.get();
   }
 
   /**
@@ -91,50 +99,84 @@ export class JevNavigator {
   }
 
   /**
-   * Evaluate a user prompt and return the structured dispatch decision
+   * Evaluate a user prompt with dual-pipeline auto-tiering, timeout bypass, and feature toggles
    */
   public async evaluatePrompt(
     userPrompt: string,
     safetyRules: string[] = [],
     sessionMeta?: { sessionFile?: string; sessionId?: string }
   ): Promise<DispatchDecision | null> {
+    const config = this.configStore.get();
     try {
       const graph = this.getOrGenerateCodeGraph();
       const skills = this.collector.collectSkills(this.projectRoot);
-      const memories = this.memoryCollector.collectMemories(this.projectRoot);
-      const { questions, dirCriteriaMap } = this.prompter.buildQuestions(
-        graph.dsl,
-        skills,
-        safetyRules,
-        memories,
-        userPrompt
+      const memories = this.memoryCollector.collectMemories(this.projectRoot, config.maxMemoryGuards || 50);
+
+      const decision = await this.pipeline.execute(
+        {
+          userPrompt,
+          dsl: graph.dsl,
+          estimatedTokens: graph.estimatedTokens,
+          skills,
+          memories,
+          safetyRules,
+        },
+        config
       );
 
-      const state = {
-        user_task: userPrompt,
-        codebase_trie_map: graph.dsl,
-        skills_catalog: this.collector.formatForJev(skills),
-        safety_rules: safetyRules,
-      };
-
-      const result = await this.client.evaluate({ state, questions });
-      const decision = this.prompter.parseAnswers(
-        result.response.answers,
-        skills,
-        dirCriteriaMap,
-        result.latencyMs,
-        result.response.usage.input_tokens,
-        memories
-      );
-
-      this.logDecisionToFile(userPrompt, decision, sessionMeta);
+      if (decision) {
+        this.logDecisionToFile(userPrompt, decision, sessionMeta);
+      } else if (config.logDecisions) {
+        this.logBypassToFile(userPrompt, 'timeout_or_error', sessionMeta);
+      }
 
       return decision;
     } catch (err) {
-      if (this.config.logDecisions) {
-        console.error('[pi-jev-navigator] Jev evaluation failed:', err);
+      if (config.logDecisions) {
+        console.error('[pi-jev-navigator] Jev evaluation error:', err);
+        this.logBypassToFile(userPrompt, err instanceof Error ? err.message : 'error', sessionMeta);
       }
       return null;
+    }
+  }
+
+  /**
+   * Log bypass event when Jev fails open
+   */
+  private logBypassToFile(
+    userPrompt: string,
+    reason: string,
+    sessionMeta?: { sessionFile?: string; sessionId?: string }
+  ): void {
+    const config = this.configStore.get();
+    if (!config.logDecisions) return;
+    try {
+      const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+      const baseJevDir = path.join(homeDir, '.pi', 'agent', 'jev-sessions');
+      const normalizedCwd = path.resolve(this.projectRoot).replace(/\\/g, '/');
+      const projectSlug = `--${normalizedCwd.replace(/^\/+/, '').replace(/\/+/g, '-')}--`;
+      const projectDir = path.join(baseJevDir, projectSlug);
+
+      if (!fs.existsSync(projectDir)) {
+        fs.mkdirSync(projectDir, { recursive: true });
+      }
+
+      const logFile = sessionMeta?.sessionFile
+        ? path.join(projectDir, path.basename(sessionMeta.sessionFile))
+        : path.join(projectDir, `jev-${new Date().toISOString().slice(0, 10)}.jsonl`);
+
+      const entry = {
+        ts: Date.now(),
+        iso: new Date().toISOString(),
+        project: this.projectRoot,
+        session_id: sessionMeta?.sessionId || null,
+        prompt: userPrompt,
+        bypassed: true,
+        bypass_reason: reason,
+      };
+      fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', 'utf-8');
+    } catch {
+      // Ignore
     }
   }
 
@@ -147,7 +189,8 @@ export class JevNavigator {
     decision: DispatchDecision,
     sessionMeta?: { sessionFile?: string; sessionId?: string }
   ): void {
-    if (!this.config.logDecisions) return;
+    const config = this.configStore.get();
+    if (!config.logDecisions) return;
     try {
       const homeDir = process.env.HOME || process.env.USERPROFILE || '';
       const baseJevDir = path.join(homeDir, '.pi', 'agent', 'jev-sessions');
@@ -202,6 +245,10 @@ export class JevNavigator {
    * Prune System Prompt skills according to Jev activation decision
    */
   public pruneSystemPrompt(systemPrompt: string, activatedSkill?: string): string {
+    const config = this.configStore.get();
+    if (config.enableSystemPromptPruning === false) {
+      return systemPrompt;
+    }
     return this.injector.pruneSystemPromptSkills(systemPrompt, activatedSkill);
   }
 
@@ -212,7 +259,8 @@ export class JevNavigator {
     userPrompt: string,
     safetyRules: string[] = []
   ): Promise<{ enrichedPrompt: string; decision: DispatchDecision | null }> {
-    if (!this.config.enableTailInjection || !this.client.getApiKey()) {
+    const config = this.configStore.get();
+    if (!config.enableTailInjection || !this.client.getApiKey()) {
       return { enrichedPrompt: userPrompt, decision: null };
     }
 
@@ -434,20 +482,63 @@ export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       const nav = getNavigator(ctx.cwd);
       const status = nav.getStatus();
+      const cfg = nav.getConfig();
       const statusStr = [
         '⚡ [TypeSafe Jev Navigator Status]',
         `• Project Root: ${status.projectRoot}`,
         ...(status.isWorktree
           ? [`• Git Worktree: Active [${status.branch}] (Main Repo: ${status.mainRepoRoot})`]
           : [`• Git Branch: [${status.branch}]`]),
+        `• Execution Mode: ${cfg.executionMode?.toUpperCase()} (Timeout: ${cfg.timeoutMs}ms)`,
+        `• Toggles: Subsystems [${cfg.enableSubsystems ? 'ON' : 'OFF'}] | Skills [${cfg.enableSkills ? 'ON' : 'OFF'}] | MemGuard [${cfg.enableMemories ? 'ON' : 'OFF'}] | Pruning [${cfg.enableSystemPromptPruning ? 'ON' : 'OFF'}]`,
         `• API Key Bound: ${status.apiKeyConfigured ? '✅ YES' : '❌ NO (Set TYPESAFE_API_KEY or ~/.pi/agent/secrets/jev.key)'}`,
-        `• Indexed Business Files: ${status.codebaseFilesIndexed} files`,
-        `• CodeGraph Tokens: ~${Number(status.estimatedTokens).toLocaleString()} tokens`,
-        `• Cached: ${status.cached ? '✅ 7-Day TTL Active' : '🔄 Freshly Generated'}`,
-        `• Skills Catalog: ${status.skillsCollected} available skills`,
+        `• Codebase DSL: ${status.codebaseFilesIndexed} business files (~${Number(status.estimatedTokens).toLocaleString()} tokens)`,
+        `• Catalogs: ${status.skillsCollected} skills | ${status.memoriesCollected} active memory guards`,
+        `• Cache: ${status.cached ? '✅ Active TTL Cache' : '🔄 Freshly Generated'}`,
       ].join('\n');
 
       ctx.ui.notify(statusStr, 'info');
+    },
+  });
+
+  // 6. Register Slash Command: /jev-config
+  pi.registerCommand('jev-config', {
+    description: 'Inspect full Jev Navigator configuration JSON',
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const nav = getNavigator(ctx.cwd);
+      const cfg = nav.getConfig();
+      ctx.ui.notify(`⚡ [Jev Config]\n${JSON.stringify(cfg, null, 2)}`, 'info');
+    },
+  });
+
+  // 7. Register Slash Command: /jev-toggle <subsystems|skills|memories|pruning|mode>
+  pi.registerCommand('jev-toggle', {
+    description: 'Toggle feature switch live: /jev-toggle <skills|mem|subsystems|pruning|mode>',
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const feature = args.trim().toLowerCase();
+      const nav = getNavigator(ctx.cwd);
+      const store = nav.getConfigStore();
+
+      let targetKey: 'subsystems' | 'skills' | 'memories' | 'pruning' | 'mode';
+      if (feature === 'skills' || feature === 'skill') {
+        targetKey = 'skills';
+      } else if (feature === 'mem' || feature === 'memory' || feature === 'memories') {
+        targetKey = 'memories';
+      } else if (feature === 'subsystems' || feature === 'subsystem' || feature === 'dirs') {
+        targetKey = 'subsystems';
+      } else if (feature === 'pruning' || feature === 'prune') {
+        targetKey = 'pruning';
+      } else if (feature === 'mode') {
+        targetKey = 'mode';
+      } else {
+        ctx.ui.notify('Usage: /jev-toggle <skills | mem | subsystems | pruning | mode>', 'warning');
+        return;
+      }
+
+      const result = store.toggle(targetKey);
+      store.saveProjectConfig();
+
+      ctx.ui.notify(`✅ [Jev Toggle] ${result.key} ➔ ${String(result.newValue)} (Saved to .pi/jev-config.json)`, 'info');
     },
   });
 

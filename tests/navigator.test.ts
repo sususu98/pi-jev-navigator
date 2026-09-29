@@ -240,4 +240,23 @@ The following skills provide specialized instructions for specific tasks.
     expect(guidance).toContain('⚠️ [correction] 当用户要求看配置时直接读取配置文件本身');
     expect(guidance).toContain('• 📁 Target Subsystem: `internal/config`');
   });
+
+  it('should support live feature toggling via JevConfigStore', () => {
+    const { JevConfigStore } = require('../src/config/config-store.ts');
+    const store = new JevConfigStore(tmpDir);
+    expect(store.get().enableSkills).toBe(true);
+    expect(store.get().enableMemories).toBe(true);
+
+    const toggleSkills = store.toggle('skills');
+    expect(toggleSkills.newValue).toBe(false);
+    expect(store.get().enableSkills).toBe(false);
+
+    const toggleMem = store.toggle('memories');
+    expect(toggleMem.newValue).toBe(false);
+    expect(store.get().enableMemories).toBe(false);
+
+    const toggleMode = store.toggle('mode');
+    expect(toggleMode.newValue).toBe('parallel');
+    expect(store.get().executionMode).toBe('parallel');
+  });
 });
