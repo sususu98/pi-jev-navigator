@@ -50,7 +50,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sususu98/pi-jev-navigator.git"
+    "url": "git+https://github.com/sususu98/pi-jev-navigator.git"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.87.1 <1"
