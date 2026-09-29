@@ -259,4 +259,23 @@ The following skills provide specialized instructions for specific tasks.
     expect(toggleMode.newValue).toBe('parallel');
     expect(store.get().executionMode).toBe('parallel');
   });
+
+  it('should parse JSONC with single-line comments, block comments, and trailing commas', () => {
+    const { parseJsonc, stripJsoncComments } = require('../src/config/config-store.ts');
+    const jsoncContent = `{
+      // 单行注释
+      "endpoint": "https://api.typesafe.ai/v1/systemone", /* 行内块注释 */
+      "model": "jev-latest",
+      /* 多行
+         块注释 */
+      "enableSubsystems": true,
+      "timeoutMs": 1500, // 超时配置
+    }`;
+
+    const parsed = parseJsonc(jsoncContent);
+    expect(parsed.endpoint).toBe('https://api.typesafe.ai/v1/systemone');
+    expect(parsed.model).toBe('jev-latest');
+    expect(parsed.enableSubsystems).toBe(true);
+    expect(parsed.timeoutMs).toBe(1500);
+  });
 });

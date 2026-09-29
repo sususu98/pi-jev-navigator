@@ -21,6 +21,78 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   logDecisions: true,
 };
 
+/**
+ * Strip single-line and multi-line comments and trailing commas from JSONC string
+ */
+export function stripJsoncComments(text: string): string {
+  let out = '';
+  let inString = false;
+  let inSingleComment = false;
+  let inMultiComment = false;
+  let stringQuote = '';
+  let isEscaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (inSingleComment) {
+      if (ch === '\n' || ch === '\r') {
+        inSingleComment = false;
+        out += ch;
+      }
+      continue;
+    }
+
+    if (inMultiComment) {
+      if (ch === '*' && next === '/') {
+        inMultiComment = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (inString) {
+      out += ch;
+      if (isEscaped) {
+        isEscaped = false;
+      } else if (ch === '\\') {
+        isEscaped = true;
+      } else if (ch === stringQuote) {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      stringQuote = ch;
+      out += ch;
+      continue;
+    }
+
+    if (ch === '/' && next === '/') {
+      inSingleComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      inMultiComment = true;
+      i++;
+      continue;
+    }
+
+    out += ch;
+  }
+
+  return out.replace(/,\s*([\]}])/g, '$1');
+}
+
+export function parseJsonc<T>(raw: string): T {
+  return JSON.parse(stripJsoncComments(raw));
+}
+
 export class JevConfigStore {
   private config: JevNavigatorConfig;
   private projectRoot: string;
@@ -31,26 +103,37 @@ export class JevConfigStore {
   }
 
   /**
-   * Load and merge configurations: Default -> Global (~/.pi/agent/jev-config.json) -> Project (.pi/jev-config.json) -> Overrides
+   * Resolve a JSON or JSONC config file path
+   */
+  private resolveConfigFile(basePathWithoutExt: string): string | null {
+    const jsoncPath = `${basePathWithoutExt}.jsonc`;
+    if (fs.existsSync(jsoncPath)) return jsoncPath;
+    const jsonPath = `${basePathWithoutExt}.json`;
+    if (fs.existsSync(jsonPath)) return jsonPath;
+    return null;
+  }
+
+  /**
+   * Load and merge configurations: Default -> Global (~/.pi/agent/jev-config.json[c]) -> Project (.pi/jev-config.json[c]) -> Overrides
    */
   private loadConfig(overrides: JevNavigatorConfig): JevNavigatorConfig {
     const homeDir = os.homedir();
-    const globalConfigPath = path.join(homeDir, '.pi', 'agent', 'jev-config.json');
-    const projectConfigPath = path.join(this.projectRoot, '.pi', 'jev-config.json');
+    const globalConfigPath = this.resolveConfigFile(path.join(homeDir, '.pi', 'agent', 'jev-config'));
+    const projectConfigPath = this.resolveConfigFile(path.join(this.projectRoot, '.pi', 'jev-config'));
 
     let globalConfig: Partial<JevNavigatorConfig> = {};
-    if (fs.existsSync(globalConfigPath)) {
+    if (globalConfigPath && fs.existsSync(globalConfigPath)) {
       try {
-        globalConfig = JSON.parse(fs.readFileSync(globalConfigPath, 'utf-8'));
+        globalConfig = parseJsonc<Partial<JevNavigatorConfig>>(fs.readFileSync(globalConfigPath, 'utf-8'));
       } catch {
         // Ignore malformed global config
       }
     }
 
     let projectConfig: Partial<JevNavigatorConfig> = {};
-    if (fs.existsSync(projectConfigPath)) {
+    if (projectConfigPath && fs.existsSync(projectConfigPath)) {
       try {
-        projectConfig = JSON.parse(fs.readFileSync(projectConfigPath, 'utf-8'));
+        projectConfig = parseJsonc<Partial<JevNavigatorConfig>>(fs.readFileSync(projectConfigPath, 'utf-8'));
       } catch {
         // Ignore malformed project config
       }
