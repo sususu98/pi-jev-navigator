@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { CodeGraphExportOptions } from '../types.js';
 
 export class CodeGraphExtractor {
@@ -16,10 +17,42 @@ export class CodeGraphExtractor {
     '.pi',
     '.gitnexus',
     'subagent-artifacts',
+    'Library',
+    'Applications',
+    '.cache',
+    '.cargo',
+    '.rustup',
+    '.npm',
+    '.bun',
+    '.pnpm',
+    '.yarn',
+    '.local',
+    '.vscode',
+    '.idea',
+    'Downloads',
+    'Movies',
+    'Music',
+    'Pictures',
+    'VirtualBox VMs',
+    '.cocoapods',
+    '.gradle',
+    '.m2',
+    '.docker',
+    '.orbstack',
+    '.colima',
+    '.venv',
+    'venv',
+    'env',
+    'target',
+    'out',
+    '.next',
+    '.nuxt',
+    'coverage',
+    '.terraform',
   ]);
 
-  private goFuncPattern = /func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]+)\s*\(/g;
-  private goStructPattern = /type\s+([A-Z][A-Za-z0-9_]+)\s+struct/g;
+  private goFuncPattern = /func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]*)\s*\(/g;
+  private goStructPattern = /type\s+([A-Z][A-Za-z0-9_]*)\s+struct/g;
   private tsExportPattern = /export\s+(?:async\s+)?(?:function|class|interface|type|const)\s+([A-Za-z0-9_]+)/g;
   private rustPubPattern = /pub\s+(?:async\s+)?(?:fn|struct|enum|trait)\s+([A-Za-z0-9_]+)/g;
   private pyDefPattern = /(?:def|class)\s+([A-Za-z0-9_]+)/g;
@@ -35,8 +68,12 @@ export class CodeGraphExtractor {
       base.endsWith('_test.go') ||
       base.endsWith('.test.ts') ||
       base.endsWith('.spec.ts') ||
+      base.endsWith('.test.tsx') ||
+      base.endsWith('.spec.tsx') ||
       base.endsWith('.test.js') ||
       base.endsWith('.spec.js') ||
+      base.endsWith('.test.jsx') ||
+      base.endsWith('.spec.jsx') ||
       base.endsWith('_test.py') ||
       base.startsWith('test_') ||
       lower.startsWith('tests/') ||
@@ -54,6 +91,18 @@ export class CodeGraphExtractor {
   public extractSymbols(filePath: string, content: string, maxSymbols: number = 8): string[] {
     const ext = path.extname(filePath).toLowerCase();
     const symbols = new Set<string>();
+
+    // RegExp instances with the global flag retain lastIndex between calls.
+    // Extraction is intentionally stateless per file.
+    for (const pattern of [
+      this.goFuncPattern,
+      this.goStructPattern,
+      this.tsExportPattern,
+      this.rustPubPattern,
+      this.pyDefPattern,
+    ]) {
+      pattern.lastIndex = 0;
+    }
 
     if (ext === '.go') {
       let match: RegExpExecArray | null;
@@ -100,16 +149,39 @@ export class CodeGraphExtractor {
     totalSymbols: number;
     estimatedTokens: number;
   } {
-    const rootDir = options.rootDir;
+    const rootDir = path.resolve(options.rootDir);
     const excludeTests = options.excludeTests ?? true;
     const maxSymbolsPerFile = options.maxSymbolsPerFile ?? 6;
-    const ignoreDirs = new Set(options.ignoreDirs || this.defaultIgnoreDirs);
+    const maxFiles = options.maxFiles ?? 3000;
+    const maxDepth = options.maxDepth ?? 8;
+
+    // Home / System Root Guard: Never recursively crawl user home directory or system root!
+    const home = path.resolve(os.homedir());
+    if (
+      rootDir === home ||
+      rootDir === '/' ||
+      rootDir === '/Users' ||
+      rootDir === '/home' ||
+      rootDir === '/root'
+    ) {
+      return {
+        dsl: '[~]\n',
+        totalFiles: 0,
+        totalSymbols: 0,
+        estimatedTokens: 0,
+      };
+    }
+
+    const customIgnores = options.ignoreDirs || [];
+    const ignoreDirs = new Set([...this.defaultIgnoreDirs, ...customIgnores]);
 
     const dirClusters = new Map<string, string[]>();
     let totalFiles = 0;
     let totalSymbols = 0;
 
-    const walk = (currentDir: string, relDir: string) => {
+    const walk = (currentDir: string, relDir: string, depth: number = 0) => {
+      if (totalFiles >= maxFiles || depth > maxDepth) return;
+
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(currentDir, { withFileTypes: true });
@@ -118,12 +190,17 @@ export class CodeGraphExtractor {
       }
 
       for (const entry of entries) {
+        if (totalFiles >= maxFiles) break;
+
         const name = entry.name;
-        if (name.startsWith('.') && name !== '.') continue;
+        if (name.startsWith('.') && name !== '.') {
+          // Check if explicit dotfile/dir is allowed; otherwise skip common hidden dirs
+          if (ignoreDirs.has(name)) continue;
+        }
 
         if (entry.isDirectory()) {
           if (!ignoreDirs.has(name)) {
-            walk(path.join(currentDir, name), relDir ? `${relDir}/${name}` : name);
+            walk(path.join(currentDir, name), relDir ? `${relDir}/${name}` : name, depth + 1);
           }
         } else if (entry.isFile()) {
           const fullPath = path.join(currentDir, name);
@@ -135,7 +212,7 @@ export class CodeGraphExtractor {
 
           // Check supported extensions
           const ext = path.extname(name).toLowerCase();
-          if (!['.go', '.ts', '.js', '.rs', '.py'].includes(ext)) {
+          if (!['.go', '.ts', '.tsx', '.js', '.jsx', '.rs', '.py'].includes(ext)) {
             continue;
           }
 
@@ -158,7 +235,7 @@ export class CodeGraphExtractor {
       }
     };
 
-    walk(rootDir, '');
+    walk(rootDir, '', 0);
 
     const lines: string[] = [];
     const sortedDirs = Array.from(dirClusters.keys()).sort();

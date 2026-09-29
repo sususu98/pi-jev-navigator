@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,18 +15,18 @@ import (
 )
 
 var ignoreDirs = map[string]bool{
-	".git":                true,
-	"node_modules":        true,
-	"vendor":              true,
-	"dist":                true,
-	"build":               true,
-	"test-output":         true,
-	"tmp":                 true,
-	"temp":                true,
-	".agents":             true,
-	".pi":                 true,
-	".gitnexus":           true,
-	"subagent-artifacts":  true,
+	".git":               true,
+	"node_modules":       true,
+	"vendor":             true,
+	"dist":               true,
+	"build":              true,
+	"test-output":        true,
+	"tmp":                true,
+	"temp":               true,
+	".agents":            true,
+	".pi":                true,
+	".gitnexus":          true,
+	"subagent-artifacts": true,
 }
 
 func isTestFile(path string) bool {
@@ -90,22 +91,43 @@ func extractGoSymbols(filePath string) []string {
 	return append(structs, funcs...)
 }
 
-func main() {
-	rootDir := flag.String("root", ".", "Project root directory")
-	outPath := flag.String("out", "", "Output path for Trie-Folded DSL (optional)")
-	quiet := flag.Bool("quiet", false, "Suppress stdout stats")
-	flag.Parse()
+func run(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("jev-graph", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	rootDir := flags.String("root", ".", "Project root directory")
+	outPath := flags.String("out", "", "Output path for Trie-Folded DSL (optional)")
+	quiet := flags.Bool("quiet", false, "Suppress stdout stats")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+
+	rootInfo, err := os.Stat(*rootDir)
+	if err != nil {
+		return fmt.Errorf("invalid root %q: %w", *rootDir, err)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("invalid root %q: not a directory", *rootDir)
+	}
 
 	t0 := time.Now()
 	dirClusters := make(map[string][]string)
 	totalFiles := 0
 	totalSymbols := 0
 
-	err := filepath.Walk(*rootDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
+	err = filepath.Walk(*rootDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		rel, _ := filepath.Rel(*rootDir, path)
+		if info == nil {
+			return fmt.Errorf("missing file info for %s", path)
+		}
+		rel, err := filepath.Rel(*rootDir, path)
+		if err != nil {
+			return err
+		}
 		if rel == "." {
 			return nil
 		}
@@ -123,6 +145,10 @@ func main() {
 
 		ext := strings.ToLower(filepath.Ext(info.Name()))
 		if ext == ".go" {
+			// Surface read errors instead of silently producing an incomplete graph.
+			if _, err := os.ReadFile(path); err != nil {
+				return err
+			}
 			symbols := extractGoSymbols(path)
 			if len(symbols) > 0 {
 				dir := filepath.ToSlash(filepath.Dir(rel))
@@ -140,10 +166,8 @@ func main() {
 		}
 		return nil
 	})
-
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Walk error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("walk %q: %w", *rootDir, err)
 	}
 
 	var sortedDirs []string
@@ -166,16 +190,32 @@ func main() {
 	duration := time.Since(t0)
 
 	if *outPath != "" {
-		_ = os.MkdirAll(filepath.Dir(*outPath), 0755)
-		_ = os.WriteFile(*outPath, []byte(dsl), 0644)
+		if err := os.MkdirAll(filepath.Dir(*outPath), 0755); err != nil {
+			return fmt.Errorf("create output directory: %w", err)
+		}
+		if err := os.WriteFile(*outPath, []byte(dsl), 0644); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
 	}
 
 	if !*quiet {
-		fmt.Fprintf(os.Stderr, "⚡ [Native Jev Graph Extractor] %d files, %d symbols in %v (~%d tokens)\n",
-			totalFiles, totalSymbols, duration, len(dsl)/4)
+		if _, err := fmt.Fprintf(stderr, "⚡ [Native Jev Graph Extractor] %d files, %d symbols in %v (~%d tokens)\n",
+			totalFiles, totalSymbols, duration, len(dsl)/4); err != nil {
+			return fmt.Errorf("write stats: %w", err)
+		}
 	}
 
 	if *outPath == "" {
-		fmt.Println(dsl)
+		if _, err := fmt.Fprintln(stdout, dsl); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
+	}
+	return nil
+}
+
+func main() {
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "jev-graph: %v\n", err)
+		os.Exit(1)
 	}
 }

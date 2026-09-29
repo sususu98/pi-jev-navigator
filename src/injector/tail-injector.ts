@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import { DispatchDecision } from '../types.js';
 
 export class TailInjector {
@@ -6,6 +5,7 @@ export class TailInjector {
    * Format the dispatch decision into a compact, high-signal tail context block
    */
   public formatTailGuidance(decision: DispatchDecision): string {
+    if (decision.bypassed) return '';
     const lines: string[] = [];
 
     lines.push('\n\n---');
@@ -17,22 +17,8 @@ export class TailInjector {
 
     if (decision.activatedSkill) {
       lines.push(`• 🛠️ Recommended SOP Skill: \`${decision.activatedSkill}\``);
-      if (decision.activatedSkillPath && fs.existsSync(decision.activatedSkillPath)) {
-        try {
-          const content = fs.readFileSync(decision.activatedSkillPath, 'utf-8');
-          // Extract Procedure or summary if present
-          const procedureMatch = content.match(/## Procedure([\s\S]*?)(?=##|$)/i);
-          if (procedureMatch) {
-            const procLines = procedureMatch[1]
-              .trim()
-              .split('\n')
-              .slice(0, 8)
-              .map((l) => `    ${l}`);
-            lines.push(`  📋 SOP Checklist:\n${procLines.join('\n')}`);
-          }
-        } catch {
-          // Ignore
-        }
+      if (decision.activatedSkillPath) {
+        lines.push(`  Read the complete SKILL.md before following this SOP: ${JSON.stringify(decision.activatedSkillPath)}`);
       }
     }
 
@@ -53,12 +39,12 @@ export class TailInjector {
       lines.push(`• 📊 Architecture Risk Level: ${decision.riskScore} (${riskEmoji})`);
     }
 
-    if (decision.latencyMs) {
+    if (decision.latencyMs !== undefined) {
       if (decision.pipelineMode === 'parallel' && decision.tokenBreakdown?.codeTokens && decision.tokenBreakdown?.memoryTokens) {
         const codeK = (decision.tokenBreakdown.codeTokens / 1000).toFixed(1);
         const memK = (decision.tokenBreakdown.memoryTokens / 1000).toFixed(1);
         lines.push(
-          `• ⚡ Jev Decision Stats: ${decision.latencyMs.toFixed(1)}ms | Parallel Stream [Code: ${codeK}k + Mem: ${memK}k] (64K Capacity)`
+          `• ⚡ Jev Decision Stats: ${decision.latencyMs.toFixed(1)}ms | Parallel Stream [Code: ${codeK}k + Mem: ${memK}k]`
         );
       } else if (decision.inputTokens) {
         lines.push(
@@ -96,7 +82,7 @@ export class TailInjector {
     // 0 skills activated: strip all skills to reduce thousands of tokens
     return systemPrompt.replace(
       fullSkillsBlock,
-      '<skills>\n<!-- TypeSafe Jev System One: No specialized SOP skills activated for this turn -->\n</skills>'
+      '<skills>\n<!-- Skill catalog routed by TypeSafe Jev; selected SOP paths are provided in navigation context. -->\n</skills>'
     );
   }
 

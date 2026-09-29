@@ -73,6 +73,8 @@ export interface CodeGraphExportOptions {
   excludeTests?: boolean;
   maxSymbolsPerFile?: number;
   ignoreDirs?: string[];
+  maxFiles?: number;
+  maxDepth?: number;
 }
 
 export interface SkillSummary {
@@ -130,4 +132,7 @@ export interface JevNavigatorConfig {
   maxMemoryGuards?: number;
   cacheTtlDays?: number;
   logDecisions?: boolean;
+  ignoreDirs?: string[];
+  maxFilesIndexed?: number;
+  maxScanDepth?: number;
 }

@@ -1,4 +1,5 @@
 import { execSync } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 
 export interface GitContext {
@@ -26,9 +27,12 @@ export function resolveGitContext(targetPath: string = process.cwd()): GitContex
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
 
-    const gitCommonDir = path.isAbsolute(gitCommonDirRaw)
+    // git prints relative paths relative to the command's cwd, not the
+    // worktree root (important when targetPath is a subdirectory).
+    const gitCommonDirPath = path.isAbsolute(gitCommonDirRaw)
       ? gitCommonDirRaw
-      : path.resolve(worktreeRoot, gitCommonDirRaw);
+      : path.resolve(targetPath, gitCommonDirRaw);
+    const gitCommonDir = fs.realpathSync(gitCommonDirPath);
 
     // main repo root is parent of .git common directory
     const mainRepoRoot = path.dirname(gitCommonDir);

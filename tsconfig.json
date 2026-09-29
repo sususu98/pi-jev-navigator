@@ -12,12 +12,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "paths": {
-      "@earendil-works/pi-coding-agent": [
-        "/Users/sususu/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
-      ]
-    }
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "tests"]

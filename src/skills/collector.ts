@@ -1,109 +1,135 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { parse as parseYaml } from 'yaml';
 import { SkillSummary } from '../types.js';
 import { resolveGitContext } from '../graph/git.js';
+import { parseJsonc } from '../config/config-store.js';
 
 export class SkillCollector {
-  /**
-   * Extract skill metadata from a SKILL.md file
-   */
+  private readonly homeDir: string;
+
+  constructor(homeDir: string = os.homedir()) {
+    this.homeDir = homeDir;
+  }
+
+  /** Parse only YAML frontmatter; the markdown body is deliberately ignored. */
   private parseSkillFile(filePath: string): SkillSummary | null {
     try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const dirName = path.basename(path.dirname(filePath));
+      const content = fs.readFileSync(filePath, 'utf8');
+      const match = content.match(/^(?:\uFEFF)?---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
+      if (!match) return null;
+      const frontmatter = parseYaml(match[1]) as Record<string, unknown> | null;
+      if (!frontmatter || typeof frontmatter !== 'object') return null;
+      if (frontmatter['disable-model-invocation'] === true) return null;
 
-      let name = dirName;
-      let description = '';
-
-      const lines = content.split('\n');
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('name:')) {
-          name = trimmed.replace('name:', '').trim().replace(/^["']|["']$/g, '');
-        } else if (trimmed.startsWith('description:')) {
-          description = trimmed.replace('description:', '').trim().replace(/^["']|["']$/g, '');
-        }
-      }
-
-      if (!description) {
-        // Fallback to first non-header line
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('---')) {
-            description = trimmed.slice(0, 100);
-            break;
-          }
-        }
-      }
-
-      return {
-        name,
-        description: description.slice(0, 100),
-        path: filePath,
-      };
+      const name = typeof frontmatter.name === 'string' && frontmatter.name.trim()
+        ? frontmatter.name.trim()
+        : path.basename(filePath).toLowerCase() === 'skill.md'
+          ? path.basename(path.dirname(filePath))
+          : path.basename(filePath, path.extname(filePath));
+      const description = typeof frontmatter.description === 'string'
+        ? frontmatter.description
+        : '';
+      if (!description) return null;
+      return { name, description, path: filePath };
     } catch {
       return null;
     }
   }
 
-  /**
-   * Collect all available project and global skills with full Git Worktree support
-   */
-  public collectSkills(projectRoot: string): SkillSummary[] {
-    const skillsMap = new Map<string, SkillSummary>();
-    const homeDir = os.homedir();
-    const gitCtx = resolveGitContext(projectRoot);
+  private readSettingsPaths(projectRoot: string): string[] {
+    const result: string[] = [];
+    for (const directory of [path.join(this.homeDir, '.pi', 'agent'), path.join(projectRoot, '.pi')]) {
+      try {
+        const settings = parseJsonc<{ skills?: unknown }>(fs.readFileSync(path.join(directory, 'settings.json'), 'utf8'));
+        if (!Array.isArray(settings.skills)) continue;
+        for (const item of settings.skills) {
+          // Pi's canonical catalog handles exclusions/globs/packages in extension mode.
+          // Standalone discovery accepts literal extra files/directories only.
+          if (typeof item !== 'string' || /^[!-]/.test(item) || /[*?{}]/.test(item)) continue;
+          const entry = item.replace(/^\+/, '');
+          result.push(entry.startsWith('~/') ? path.join(this.homeDir, entry.slice(2)) : path.resolve(directory, entry));
+        }
+      } catch { /* optional settings */ }
+    }
+    return result;
+  }
 
+  private collectFromPath(input: string, add: (file: string) => void, visitedDirs: Set<string>, visitedFiles: Set<string>, allowStandalone = true): void {
+    let stat: fs.Stats;
+    let real: string;
+    try {
+      real = fs.realpathSync(input);
+      stat = fs.statSync(real);
+    } catch {
+      return;
+    }
+    if (stat.isFile()) {
+      if (/\.md$/i.test(real) && !visitedFiles.has(real)) {
+        visitedFiles.add(real);
+        add(real);
+      }
+      return;
+    }
+    if (!stat.isDirectory() || visitedDirs.has(real)) return;
+    visitedDirs.add(real);
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(real, { withFileTypes: true }); } catch { return; }
+    const skillFile = entries.find((entry) => entry.name === 'SKILL.md')
+      ?? entries.find((entry) => entry.name.toLowerCase() === 'skill.md');
+    if (skillFile) {
+      this.collectFromPath(path.join(real, skillFile.name), add, visitedDirs, visitedFiles, false);
+      return; // A skill's references/scripts are not additional skills.
+    }
+    for (const entry of entries) {
+      const child = path.join(real, entry.name);
+      if (entry.isDirectory() || entry.isSymbolicLink()) {
+        this.collectFromPath(child, add, visitedDirs, visitedFiles, false);
+      } else if (allowStandalone && entry.isFile() && /\.md$/i.test(entry.name)) {
+        this.collectFromPath(child, add, visitedDirs, visitedFiles, false);
+      }
+    }
+  }
+
+  public collectSkills(projectRoot: string, additionalPaths: string[] = []): SkillSummary[] {
+    const gitCtx = resolveGitContext(projectRoot);
     const searchDirs = [
       path.join(gitCtx.worktreeRoot, '.agents', 'skills'),
       path.join(gitCtx.worktreeRoot, '.pi', 'skills'),
-      ...(gitCtx.isWorktree
-        ? [
-            path.join(gitCtx.mainRepoRoot, '.agents', 'skills'),
-            path.join(gitCtx.mainRepoRoot, '.pi', 'skills'),
-          ]
-        : []),
-      path.join(homeDir, '.agents', 'skills'),
-      path.join(homeDir, '.pi', 'agent', 'skills'),
-      path.join(homeDir, '.pi', 'agent', 'projects-memory', gitCtx.projectName, 'skills'),
-      path.join(homeDir, '.pi', 'agent', 'projects-memory', path.basename(projectRoot), 'skills'),
-      path.join(homeDir, '.pi', 'agent', 'pi-hermes-memory', 'skills'),
+      ...(gitCtx.isWorktree ? [path.join(gitCtx.mainRepoRoot, '.agents', 'skills'), path.join(gitCtx.mainRepoRoot, '.pi', 'skills')] : []),
+      path.join(this.homeDir, '.agents', 'skills'),
+      path.join(this.homeDir, '.pi', 'agent', 'skills'),
+      path.join(this.homeDir, '.pi', 'agent', 'projects-memory', gitCtx.projectName, 'skills'),
+      path.join(this.homeDir, '.pi', 'agent', 'projects-memory', path.basename(projectRoot), 'skills'),
+      path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'skills'),
+      ...this.readSettingsPaths(projectRoot),
+      ...additionalPaths.map((p) => p.startsWith('~/') ? path.join(this.homeDir, p.slice(2)) : path.resolve(projectRoot, p)),
     ];
-
-    for (const baseDir of searchDirs) {
-      if (!fs.existsSync(baseDir)) continue;
-      try {
-        const entries = fs.readdirSync(baseDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory()) {
-            const skillPath = path.join(baseDir, entry.name, 'SKILL.md');
-            const skillLowerPath = path.join(baseDir, entry.name, 'skill.md');
-            const targetFile = fs.existsSync(skillPath)
-              ? skillPath
-              : fs.existsSync(skillLowerPath)
-                ? skillLowerPath
-                : null;
-
-            if (targetFile) {
-              const summary = this.parseSkillFile(targetFile);
-              if (summary && !skillsMap.has(summary.name)) {
-                skillsMap.set(summary.name, summary);
-              }
-            }
-          }
-        }
-      } catch {
-        // Ignore unreadable dirs
-      }
-    }
-
-    return Array.from(skillsMap.values());
+    return this.collectPaths(searchDirs);
   }
 
-  /**
-   * Format skills list into compact strings for Jev state
-   */
+  /** Learned Hermes SOPs supplement, but never override, Pi's canonical catalog. */
+  public collectLearnedSkills(projectRoot: string): SkillSummary[] {
+    const git = resolveGitContext(projectRoot);
+    return this.collectPaths([
+      path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'skills'),
+      path.join(this.homeDir, '.pi', 'agent', 'projects-memory', git.projectName, 'skills'),
+    ]);
+  }
+
+  private collectPaths(searchDirs: string[]): SkillSummary[] {
+    const skills = new Map<string, SkillSummary>();
+    const visitedDirs = new Set<string>();
+    const visitedFiles = new Set<string>();
+    const add = (file: string) => {
+      const summary = this.parseSkillFile(file);
+      if (summary && !skills.has(summary.name)) skills.set(summary.name, summary);
+    };
+    for (const dir of searchDirs) this.collectFromPath(dir, add, visitedDirs, visitedFiles);
+    return [...skills.values()];
+  }
+
   public formatForJev(skills: SkillSummary[]): string[] {
     return skills.map((s) => `${s.name}: ${s.description}`);
   }

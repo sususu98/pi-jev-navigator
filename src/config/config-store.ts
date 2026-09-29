@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser/lib/esm/main.js';
 import { JevNavigatorConfig, ExecutionMode } from '../types.js';
 
 export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFilePath' | 'endpoint' | 'model'>> & {
@@ -19,214 +20,192 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   maxMemoryGuards: 80,
   cacheTtlDays: 7,
   logDecisions: true,
+  ignoreDirs: [
+    '.git', 'node_modules', 'vendor', 'dist', 'build', 'test-output', 'tmp', 'temp',
+    '.agents', '.pi', '.gitnexus', 'subagent-artifacts',
+    'Library', 'Applications', '.cache', '.cargo', '.rustup', '.npm', '.bun', '.pnpm', '.yarn',
+    '.local', '.vscode', '.idea', 'Downloads', 'Movies', 'Music', 'Pictures', 'VirtualBox VMs',
+    '.cocoapods', '.gradle', '.m2', '.docker', '.orbstack', '.colima', '.venv', 'venv', 'env',
+    'target', 'out', '.next', '.nuxt', 'coverage', '.terraform',
+  ],
+  maxFilesIndexed: 3000,
+  maxScanDepth: 8,
 };
 
-/**
- * Strip single-line and multi-line comments and trailing commas from JSONC string
- */
+const PROTECTED_PROJECT_KEYS = new Set<keyof JevNavigatorConfig>(['endpoint', 'apiKey', 'keyFilePath']);
+const CONFIG_KEYS = new Set<keyof JevNavigatorConfig>([
+  'apiKey', 'keyFilePath', 'endpoint', 'model', 'enableTailInjection', 'enableSubsystems',
+  'enableSkills', 'enableMemories', 'enableSystemPromptPruning', 'executionMode', 'timeoutMs',
+  'maxMemoryGuards', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
+]);
+type ConfigKey = keyof JevNavigatorConfig;
+type Layer = Partial<JevNavigatorConfig>;
+
+/** Kept for compatibility; parsing itself is delegated to jsonc-parser. */
 export function stripJsoncComments(text: string): string {
-  let out = '';
-  let inString = false;
-  let inSingleComment = false;
-  let inMultiComment = false;
-  let stringQuote = '';
-  let isEscaped = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    const next = text[i + 1];
-
-    if (inSingleComment) {
-      if (ch === '\n' || ch === '\r') {
-        inSingleComment = false;
-        out += ch;
-      }
-      continue;
-    }
-
-    if (inMultiComment) {
-      if (ch === '*' && next === '/') {
-        inMultiComment = false;
-        i++;
-      }
-      continue;
-    }
-
-    if (inString) {
-      out += ch;
-      if (isEscaped) {
-        isEscaped = false;
-      } else if (ch === '\\') {
-        isEscaped = true;
-      } else if (ch === stringQuote) {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (ch === '"' || ch === "'") {
-      inString = true;
-      stringQuote = ch;
-      out += ch;
-      continue;
-    }
-
-    if (ch === '/' && next === '/') {
-      inSingleComment = true;
-      i++;
-      continue;
-    }
-
-    if (ch === '/' && next === '*') {
-      inMultiComment = true;
-      i++;
-      continue;
-    }
-
-    out += ch;
-  }
-
-  return out.replace(/,\s*([\]}])/g, '$1');
+  const errors: ParseError[] = [];
+  const value = parse(text, errors, { allowTrailingComma: true });
+  return errors.length ? text : JSON.stringify(value);
 }
 
 export function parseJsonc<T>(raw: string): T {
-  return JSON.parse(stripJsoncComments(raw));
+  const errors: ParseError[] = [];
+  const value = parse(raw, errors, { allowTrailingComma: true });
+  if (errors.length) throw new Error(`JSONC parse error at offset ${errors[0].offset}`);
+  return value as T;
+}
+
+function validateLayer(value: unknown, label: string, diagnostics: string[]): Layer {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    diagnostics.push(`⚠️ Invalid ${label} config: expected an object.`);
+    return {};
+  }
+  const result: Layer = {};
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    if (!CONFIG_KEYS.has(rawKey as ConfigKey)) {
+      diagnostics.push(`⚠️ Ignoring unknown ${label} config key: ${rawKey}.`);
+      continue;
+    }
+    const key = rawKey as ConfigKey;
+    const valid = key === 'executionMode'
+      ? rawValue === 'auto' || rawValue === 'parallel' || rawValue === 'unified'
+      : key === 'apiKey' || key === 'keyFilePath' || key === 'endpoint' || key === 'model'
+        ? typeof rawValue === 'string' && rawValue.length > 0
+        : ['enableTailInjection', 'enableSubsystems', 'enableSkills', 'enableMemories', 'enableSystemPromptPruning', 'logDecisions'].includes(key)
+          ? typeof rawValue === 'boolean'
+          : typeof rawValue === 'number' && Number.isFinite(rawValue) &&
+            (key === 'timeoutMs' ? Number.isSafeInteger(rawValue) && rawValue > 0
+              : key === 'maxMemoryGuards' ? Number.isSafeInteger(rawValue) && rawValue >= 0
+                : rawValue >= 0);
+    if (!valid) {
+      diagnostics.push(`⚠️ Ignoring invalid ${label} config value for ${key}.`);
+      continue;
+    }
+    result[key] = rawValue as never;
+  }
+  return result;
+}
+
+function parseFile(filePath: string, label: string, diagnostics: string[]): Layer | null {
+  try {
+    const errors: ParseError[] = [];
+    const value = parse(fs.readFileSync(filePath, 'utf8'), errors, { allowTrailingComma: true });
+    if (errors.length) throw new Error(`JSONC parse error at offset ${errors[0].offset}`);
+    return validateLayer(value, label, diagnostics);
+  } catch (err) {
+    diagnostics.push(`⚠️ Failed to parse ${label} config [${filePath}]: ${err instanceof Error ? err.message : String(err)}.`);
+    return null;
+  }
 }
 
 export class JevConfigStore {
   private config: JevNavigatorConfig;
   private projectRoot: string;
+  private homeDir: string;
   private diagnostics: string[] = [];
+  private globalLayer: Layer = {};
+  private projectLayer: Layer = {};
+  private globalConfigPath: string | null = null;
+  private projectConfigPath: string | null = null;
+  private explicitKeys = new Set<ConfigKey>();
 
-  constructor(projectRoot: string = process.cwd(), overrides: JevNavigatorConfig = {}) {
+  constructor(projectRoot: string = process.cwd(), overrides: JevNavigatorConfig = {}, homeDir: string = os.homedir()) {
     this.projectRoot = projectRoot;
+    this.homeDir = homeDir;
     this.config = this.loadConfig(overrides);
   }
 
-  public getDiagnostics(): string[] {
-    return [...this.diagnostics];
+  public getDiagnostics(): string[] { return [...this.diagnostics]; }
+
+  private candidatePaths(base: string): string[] { return [`${base}.jsonc`, `${base}.json`]; }
+
+  private loadLayer(base: string, label: string): { layer: Layer; filePath: string | null } {
+    for (const candidate of this.candidatePaths(base)) {
+      if (!fs.existsSync(candidate)) continue;
+      const parsed = parseFile(candidate, label, this.diagnostics);
+      if (parsed) return { layer: parsed, filePath: candidate };
+    }
+    return { layer: {}, filePath: null };
   }
 
-  /**
-   * Resolve a JSON or JSONC config file path
-   */
-  private resolveConfigFile(basePathWithoutExt: string): string | null {
-    const jsoncPath = `${basePathWithoutExt}.jsonc`;
-    if (fs.existsSync(jsoncPath)) return jsoncPath;
-    const jsonPath = `${basePathWithoutExt}.json`;
-    if (fs.existsSync(jsonPath)) return jsonPath;
-    return null;
-  }
-
-  /**
-   * Load and merge configurations: Default -> Global (~/.pi/agent/jev-config.json[c]) -> Project (.pi/jev-config.json[c]) -> Overrides
-   */
   private loadConfig(overrides: JevNavigatorConfig): JevNavigatorConfig {
     this.diagnostics = [];
-    const homeDir = os.homedir();
-    const globalConfigPath = this.resolveConfigFile(path.join(homeDir, '.pi', 'agent', 'jev-config'));
-    const projectConfigPath = this.resolveConfigFile(path.join(this.projectRoot, '.pi', 'jev-config'));
-
-    let globalConfig: Partial<JevNavigatorConfig> = {};
-    if (globalConfigPath && fs.existsSync(globalConfigPath)) {
-      try {
-        globalConfig = parseJsonc<Partial<JevNavigatorConfig>>(fs.readFileSync(globalConfigPath, 'utf-8'));
-      } catch (err) {
-        this.diagnostics.push(
-          `⚠️ Failed to parse global config [${globalConfigPath}]: ${err instanceof Error ? err.message : String(err)}. Using fallback defaults.`
-        );
-      }
+    const global = this.loadLayer(path.join(this.homeDir, '.pi', 'agent', 'jev-config'), 'global');
+    const project = this.loadLayer(path.join(this.projectRoot, '.pi', 'jev-config'), 'project');
+    this.globalLayer = global.layer;
+    this.projectLayer = Object.fromEntries(
+      Object.entries(project.layer).filter(([key]) => !PROTECTED_PROJECT_KEYS.has(key as ConfigKey)),
+    );
+    this.globalConfigPath = global.filePath;
+    this.projectConfigPath = project.filePath;
+    for (const key of Object.keys(project.layer) as ConfigKey[]) {
+      if (PROTECTED_PROJECT_KEYS.has(key)) this.diagnostics.push(`⚠️ Ignoring protected project config key: ${key}.`);
     }
-
-    let projectConfig: Partial<JevNavigatorConfig> = {};
-    if (projectConfigPath && fs.existsSync(projectConfigPath)) {
-      try {
-        projectConfig = parseJsonc<Partial<JevNavigatorConfig>>(fs.readFileSync(projectConfigPath, 'utf-8'));
-      } catch (err) {
-        this.diagnostics.push(
-          `⚠️ Failed to parse project config [${projectConfigPath}]: ${err instanceof Error ? err.message : String(err)}. Using global/fallback defaults.`
-        );
-      }
-    }
-
-    return {
-      ...DEFAULT_CONFIG,
-      ...globalConfig,
-      ...projectConfig,
-      ...overrides,
-    };
+    const trustedOverrides = validateLayer(overrides, 'constructor', this.diagnostics);
+    return { ...DEFAULT_CONFIG, ...this.globalLayer, ...this.projectLayer, ...trustedOverrides };
   }
 
-  public get(): JevNavigatorConfig {
-    return { ...this.config };
-  }
+  public get(): JevNavigatorConfig { return { ...this.config }; }
 
   public set(updates: Partial<JevNavigatorConfig>): void {
-    this.config = { ...this.config, ...updates };
+    const valid = validateLayer(updates, 'runtime', this.diagnostics);
+    this.config = { ...this.config, ...valid };
+    for (const key of Object.keys(valid) as ConfigKey[]) this.explicitKeys.add(key);
   }
 
-  /**
-   * Toggle a boolean feature flag or cycle execution mode
-   */
-  public toggle(feature: 'subsystems' | 'skills' | 'memories' | 'pruning' | 'mode'): {
-    key: string;
-    newValue: boolean | string;
-  } {
-    switch (feature) {
-      case 'subsystems': {
-        const val = !this.config.enableSubsystems;
-        this.config.enableSubsystems = val;
-        return { key: 'enableSubsystems', newValue: val };
-      }
-      case 'skills': {
-        const val = !this.config.enableSkills;
-        this.config.enableSkills = val;
-        return { key: 'enableSkills', newValue: val };
-      }
-      case 'memories': {
-        const val = !this.config.enableMemories;
-        this.config.enableMemories = val;
-        return { key: 'enableMemories', newValue: val };
-      }
-      case 'pruning': {
-        const val = !this.config.enableSystemPromptPruning;
-        this.config.enableSystemPromptPruning = val;
-        return { key: 'enableSystemPromptPruning', newValue: val };
-      }
-      case 'mode': {
-        const modes: ExecutionMode[] = ['auto', 'parallel', 'unified'];
-        const currentIdx = modes.indexOf(this.config.executionMode || 'auto');
-        const nextMode = modes[(currentIdx + 1) % modes.length];
-        this.config.executionMode = nextMode;
-        return { key: 'executionMode', newValue: nextMode };
-      }
+  public toggle(feature: 'subsystems' | 'skills' | 'memories' | 'pruning' | 'mode'): { key: string; newValue: boolean | string } {
+    const mapping = {
+      subsystems: 'enableSubsystems', skills: 'enableSkills', memories: 'enableMemories', pruning: 'enableSystemPromptPruning',
+    } as const;
+    if (feature === 'mode') {
+      const modes: ExecutionMode[] = ['auto', 'parallel', 'unified'];
+      const nextMode = modes[(modes.indexOf(this.config.executionMode || 'auto') + 1) % modes.length];
+      this.set({ executionMode: nextMode });
+      return { key: 'executionMode', newValue: nextMode };
     }
+    const key = mapping[feature];
+    const value = !this.config[key];
+    this.set({ [key]: value });
+    return { key, newValue: value };
   }
 
-  /**
-   * Save current configuration to project .pi/jev-config.json
-   */
+  private writeConfig(baseDir: string, baseName: string, values: Layer, existingPath: string | null, removeProtected: boolean): string {
+    fs.mkdirSync(baseDir, { recursive: true });
+    const configPath = existingPath || path.join(baseDir, `${baseName}.json`);
+    let output: string;
+    if (existingPath && fs.existsSync(existingPath)) {
+      output = fs.readFileSync(existingPath, 'utf8');
+      const formattingOptions = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+      if (removeProtected) {
+        for (const key of PROTECTED_PROJECT_KEYS) output = applyEdits(output, modify(output, [key], undefined, formattingOptions));
+      }
+      for (const [key, value] of Object.entries(values)) {
+        output = applyEdits(output, modify(output, [key], value, formattingOptions));
+      }
+      if (!output.endsWith('\n')) output += '\n';
+    } else {
+      output = JSON.stringify(values, null, 2) + '\n';
+    }
+    fs.writeFileSync(configPath, output, { encoding: 'utf8', mode: 0o600 });
+    fs.chmodSync(configPath, 0o600);
+    return configPath;
+  }
+
   public saveProjectConfig(): string {
-    const piDir = path.join(this.projectRoot, '.pi');
-    if (!fs.existsSync(piDir)) {
-      fs.mkdirSync(piDir, { recursive: true });
+    const values: Layer = { ...this.projectLayer };
+    for (const key of this.explicitKeys) {
+      if (!PROTECTED_PROJECT_KEYS.has(key)) (values as Record<string, unknown>)[key] = this.config[key];
     }
-    const configPath = path.join(piDir, 'jev-config.json');
-    fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2) + '\n', 'utf-8');
-    return configPath;
+    const result = this.writeConfig(path.join(this.projectRoot, '.pi'), 'jev-config', values, this.projectConfigPath, true);
+    this.projectConfigPath = result;
+    return result;
   }
 
-  /**
-   * Save current configuration to global ~/.pi/agent/jev-config.json
-   */
   public saveGlobalConfig(): string {
-    const homeDir = os.homedir();
-    const agentDir = path.join(homeDir, '.pi', 'agent');
-    if (!fs.existsSync(agentDir)) {
-      fs.mkdirSync(agentDir, { recursive: true });
-    }
-    const configPath = path.join(agentDir, 'jev-config.json');
-    fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2) + '\n', 'utf-8');
-    return configPath;
+    const values: Layer = { ...this.globalLayer };
+    for (const key of this.explicitKeys) (values as Record<string, unknown>)[key] = this.config[key];
+    const result = this.writeConfig(path.join(this.homeDir, '.pi', 'agent'), 'jev-config', values, this.globalConfigPath, false);
+    this.globalConfigPath = result;
+    return result;
   }
 }

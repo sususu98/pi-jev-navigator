@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { createHash } from 'crypto';
 import { resolveGitContext } from '../graph/git.js';
 
 export interface MemoryGuard {
@@ -28,17 +29,21 @@ interface InternalMemoryEntry {
 }
 
 export class MemoryCollector {
+  private readonly homeDir: string;
   private memoryCache: { project: string; timestamp: number; guards: MemoryGuard[] } | null = null;
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache
+
+  constructor(homeDir: string = os.homedir()) {
+    this.homeDir = homeDir;
+  }
 
   /**
    * Pure mechanical normalization of memory title for exact deduplication (No hardcoded keyword heuristics)
    */
-  private getDeduplicationKey(title: string): string {
-    return title
-      .toLowerCase()
-      .replace(/[^\u4e00-\u9fa5a-z0-9]/g, '')
-      .slice(0, 32);
+  private getDeduplicationKey(category: string, title: string, rule: string, project: string): string {
+    return createHash('sha256')
+      .update(JSON.stringify([category, title, rule, project]))
+      .digest('hex');
   }
 
   /**
@@ -92,8 +97,8 @@ export class MemoryCollector {
     const bodyLines = lines.slice(1).map((l) => l.replace(/<!--[\s\S]*?-->/g, '').trim()).filter(Boolean);
     const body = bodyLines.join(' ').replace(/\s+/g, ' ').trim();
 
-    const summary = (body ? `${cleanTitle}: ${body}` : cleanTitle).slice(0, 140);
-    const rule = (body || cleanTitle).slice(0, 300);
+    const summary = body ? `${cleanTitle}: ${body}` : cleanTitle;
+    const rule = body || cleanTitle;
 
     return {
       category,
@@ -122,12 +127,11 @@ export class MemoryCollector {
       return this.memoryCache.guards.slice(0, maxTotal);
     }
 
-    const homeDir = os.homedir();
     const memoryFiles = [
-      { path: path.join(homeDir, '.pi', 'agent', 'pi-hermes-memory', 'failures.md'), defaultCategory: 'correction' as const },
-      { path: path.join(homeDir, '.pi', 'agent', 'pi-hermes-memory', 'USER.md'), defaultCategory: 'preference' as const },
-      { path: path.join(homeDir, '.pi', 'agent', 'projects-memory', targetProject, 'MEMORY.md'), defaultCategory: 'convention' as const },
-      { path: path.join(homeDir, '.pi', 'agent', 'pi-hermes-memory', 'MEMORY.md'), defaultCategory: 'convention' as const },
+      { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'failures.md'), defaultCategory: 'correction' as const },
+      { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'USER.md'), defaultCategory: 'preference' as const },
+      { path: path.join(this.homeDir, '.pi', 'agent', 'projects-memory', targetProject, 'MEMORY.md'), defaultCategory: 'convention' as const },
+      { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'MEMORY.md'), defaultCategory: 'convention' as const },
     ];
 
     const entriesMap = new Map<string, InternalMemoryEntry>();
@@ -147,7 +151,7 @@ export class MemoryCollector {
             continue;
           }
 
-          const dedupKey = this.getDeduplicationKey(parsed.cleanTitle);
+          const dedupKey = this.getDeduplicationKey(parsed.category, parsed.cleanTitle, parsed.rule, parsed.project);
           if (!dedupKey) continue;
 
           const existing = entriesMap.get(dedupKey);
@@ -162,20 +166,14 @@ export class MemoryCollector {
               existing.latestDate = parsed.lastDate;
               existing.summary = parsed.summary;
               existing.rule = parsed.rule;
-              existing.title = parsed.cleanTitle.slice(0, 60);
+              existing.title = parsed.cleanTitle;
               existing.project = parsed.project;
             }
           } else {
-            const slugBase = parsed.cleanTitle
-              .slice(0, 24)
-              .replace(/[^a-zA-Z0-9_\u4e00-\u9fa5]/g, '_')
-              .replace(/_+/g, '_')
-              .replace(/^_|_$/g, '');
-
             entriesMap.set(dedupKey, {
-              id: `mem_${slugBase || dedupKey.slice(0, 20)}`,
+              id: `mem_${dedupKey}`,
               category: parsed.category,
-              title: parsed.cleanTitle.slice(0, 60),
+              title: parsed.cleanTitle,
               summary: parsed.summary,
               rule: parsed.rule,
               project: parsed.project,

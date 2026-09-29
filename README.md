@@ -1,175 +1,158 @@
 # ⚡ pi-jev-navigator
 
-> **Ultra-Low-Token System One Context Governance & Dual-Pipeline Intent Navigator for Pi Coding Agent**  
-> Powered by [TypeSafe Jev](https://typesafe.ai) (`jev-1.13.0`), Trie-Folded CodeGraphs, and Hermes Memory Guard.
+Context routing for Pi Coding Agent using TypeSafe Jev: code directories, SOP skills, and Hermes memory guards are selected before the main agent runs.
 
----
+## Behavior and safety boundaries
 
-## 🌟 Overview
+- **Request-local navigation:** selected subsystems, full skill paths and memory rules are appended to the latest user message sent to the model. Persisted transcripts and the original user content are not rewritten.
+- **Scoped pruning:** after a successful decision, only system skill sections are replaced with a stable catalog placeholder. User messages, tool results, tool schemas and tool-call arguments are never searched/replaced. There is no provider-payload mutation hook.
+- **Whole-run lifetime:** guidance survives tool batches, retries and recovery until Pi's `agent_settled` event. Sessions are isolated and superseded decisions are discarded.
+- **Fail-open:** missing credentials, cancellation, invalid responses and request failures leave native context unchanged. A failed decision is not interpreted as “select no skills”.
+- **Independent controls:** disabling pruning keeps the native catalog while still adding guidance. Disabling skills keeps native skills and disables Jev skill selection. Disabling tail injection disables automatic routing and pruning; `/jev-eval` remains an explicit diagnostic command.
+- **Credential boundary:** only trusted global configuration, environment variables, or explicit library-constructor options can configure credentials and endpoints. Project `endpoint`, `apiKey` and `keyFilePath` are ignored with diagnostics. HTTP redirects are rejected.
 
-`pi-jev-navigator` is a high-precision, low-token context governance and intent dispatch extension for [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent). It solves the fundamental **Token Bloat**, **Attention Dilution**, and **"Memories Recorded But Never Used"** problems when working with massive repositories (e.g. 1,000+ files, 130+ skills, 1,000+ memory entries).
+The extension does not guarantee provider prefix-cache hits. Successful routed requests use a decision-independent system catalog placeholder, but fail-open requests restore native context, and other extensions/providers may also change prompts.
 
-Instead of dumping hundreds of SOP skills and memory logs into the **System Prompt** (which ruins LLM Prefix Caching and wastes tens of thousands of tokens per turn), `pi-jev-navigator` uses **TypeSafe Jev (System One API)** as an upstream ~450ms decision engine:
-
-1. **🌳 Trie-Folded CodeGraph**: Compresses full repository AST symbols (Go, TS, Rust, Python) into an ultra-compact Trie-Folded DSL (~14k tokens for 570+ Go files, 0 test files).
-2. **⚡ Dual-Pipeline Auto-Tiering (64K Capacity)**: Automatically parallelizes CodeGraph/Skill routing and Hermes Memory Guards across two concurrent streams (`Promise.all`), doubling capacity to 64K tokens with zero extra latency (~450ms).
-3. **🧠 Hermes Memory Guard Dispatcher**: Proactively recalls and attaches critical `[correction]` and `[preference]` constraints before the main model generates code (preventing repetitive command mistakes like `grep`/`find`).
-4. **✂️ Dynamic System Prompt Pruning**: Strips all 130+ unactivated Skill XML tags from the System Prompt, keeping it 100% static and cache-friendly while saving 5,000–15,000 tokens per turn.
-5. **🛡️ Fail-Open Timeout Bypass**: 1,500ms hard timeout guard. If external API or network jitters occur, the agent seamlessly bypasses in 0ms without blocking.
-6. **🌲 Native Git Worktree Support**: `resolveGitContext` accurately detects linked worktrees and connects main repository project memories.
-7. **🗂️ Pi-Mirrored Telemetry Logging**: Automatically partitions decision telemetry into `~/.pi/agent/jev-sessions/<project-slug>/<session-id>.jsonl` for Recursive Self-Improvement (RSI) data flywheels.
-
----
-
-## 🏗️ Architecture Pipeline
+## Pipeline
 
 ```text
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │ 1. User Prompt (e.g. "查看一下 antigravity 和 prod 的敏感词配置")                         │
- └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │ 2. Local State Assembly (<5ms, Zero Network)                                           │
- │    • Trie-Folded CodeGraph (.pi/cpa-macro-map.dsl) - 579 files, 2,051 symbols (~14k tok) │
- │    • 133+ All Skills Catalog (Project + Global + Hermes Dynamic Skills)                │
- │    • 50+ Hermes Active Memory Guards ([correction], [preference], [failure])            │
- └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │ 3. TypeSafe Jev Dual-Pipeline Engine (jev-latest / jev-1.13.0, 440ms, <$0.001 USD)      │
- │    Promise.all([Req 1: CodeGraph & Skills, Req 2: Hermes Memory Guards])               │
- │    ├── q1_target_subsystem: internal/config & internal/runtime/executor/helps          │
- │    ├── q2_active_skill: none (No specialized SOP needed for read query)                │
- │    ├── q3_safety_guard: standard_safe                                                  │
- │    ├── q4_complexity_risk: 0.11 (Low cosmetic read)                                    │
- │    └── q5_memory_guard: [correction] 查看配置直接读取配置文件，严禁盲查源码               │
- └───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                             │
-                                             ▼
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │ 4. System Prompt Pruning & Tail Injection                                              │
- │    • System Prompt: Prunes 132 redundant skills (100% Prefix Cache Hit)               │
- │    • User Tail: Appends Subsystem target & Active Memory Guard before LLM generates    │
- └────────────────────────────────────────────────────────────────────────────────────────┘
+before_agent_start
+  → collect enabled inputs
+  → estimate serialized payload tokens
+  → unified request OR parallel code/skills + memory requests
+  → validate every answer against its request criteria
+context_with_system (every model request)
+  → replace system skill catalog only after routing succeeds
+  → append cached navigation guidance, including full SOP file paths
+agent_settled / session_shutdown
+  → clear session-scoped decision
 ```
 
----
+Directory and skill candidates are sent in full: there is **no client-side keyword or semantic pre-filter**. Candidate IDs are collision-free within a request. Pi's canonical skill catalog supplies package/custom-path and resource-selection behavior; learned Hermes SOPs supplement it without overriding native names. Standalone library usage also supports recursive directories, symlinks, YAML frontmatter, explicit paths and literal skill paths from settings. Manual-only skills are not auto-selected.
 
-## 🚀 Installation & Global Setup
+Memory entries use full-content hashes for exact deduplication. Metadata ranking and the configured `maxMemoryGuards` limit remain supported; different rules sharing a title or prefix are not merged.
 
-### 1. Build and Test
+### Auto routing and capacity
+
+`auto` measures the serialized request's UTF-8 bytes, then estimates tokens using the existing **2.85 bytes/token** calibration. It splits at **28,000 estimated tokens**, when memory candidates exist. Actual token usage comes from the response.
+
+These are estimates, not tokenizer-exact capacity checks. Parallel mode is **two separate requests, not a shared 64K window**. A large single track or user prompt can still exceed the service's limits; rejection fails open rather than silently dropping candidates. Disabled/empty memory streams do not cause a second request.
+
+`timeoutMs` bounds HTTP headers **and the response body**, supports cancellation and bounds response size to 4 MiB. It is not an end-to-end latency guarantee: local graph/skill/memory collection happens before HTTP dispatch and currently includes synchronous filesystem/Git work.
+
+### Graph implementations
+
+- The extension uses a compact **regex-based exported-symbol map** for Go, TS/JS (including TSX/JSX), Rust and Python. It is not a complete multi-language AST or call graph.
+- The separate `jev-graph` CLI uses Go's AST parser for **Go files only**.
+- GitNexus status can be inspected, but its analyzer and impact queries are not automatically part of the routing pipeline.
+- The symbol-map cache has a configurable TTL. Use `/jev-refresh` after source changes when immediate freshness is needed.
+
+## Installation
+
+Requirements for development: Node.js **22.19+**, Bun, Go **1.22+**. The extension targets Pi **0.87.1+** (pre-1.0 API compatibility should be checked on upgrades).
 
 ```bash
-cd ~/workspace/pi-jev-navigator
 bun install
 bun run build
 bun test
+bun run test:native
 ```
 
-### 2. Configure TypeSafe API Key
-
-The extension automatically searches for your API key in the following locations (with fallback):
-
-1. Config file: `"apiKey": "apikey_xxx"` in `~/.pi/agent/jev-config.jsonc`
-2. Environment variable: `export TYPESAFE_API_KEY="apikey_xxx"` or `export JEV_API_KEY="apikey_xxx"`
-3. Secure credential file (`0600` permissions): `~/.pi/agent/secrets/jev.key`
+Install the local package through Pi:
 
 ```bash
-mkdir -p ~/.pi/agent/secrets
-echo "your_typesafe_api_key_here" > ~/.pi/agent/secrets/jev.key
-chmod 0600 ~/.pi/agent/secrets/jev.key
+pi install /absolute/path/to/pi-jev-navigator
 ```
 
-### 3. Install Globally in Pi Agent
-
-Link the bundled standalone bundle to your global Pi extensions directory:
+Or keep the existing bundled-extension setup (do not install twice):
 
 ```bash
 mkdir -p ~/.pi/agent/extensions
-ln -sf ~/workspace/pi-jev-navigator/dist/index.js ~/.pi/agent/extensions/jev-navigator.js
+ln -sf /absolute/path/to/pi-jev-navigator/dist/index.js ~/.pi/agent/extensions/jev-navigator.js
 ```
 
----
+Run `/reload` after rebuilding. Building the bundle does not reload an already-running extension instance.
 
-## ⚙️ Configuration (`jev-config.jsonc`)
+## Credentials
 
-The extension supports full **JSONC** syntax (single-line `//`, multi-line `/* */`, and trailing commas).
+Supported sources, in priority order:
 
-* **Global Config**: `~/.pi/agent/jev-config.jsonc`
-* **Project Override**: `<projectRoot>/.pi/jev-config.jsonc`
+1. `apiKey` in trusted global config or explicit constructor options.
+2. Explicit trusted `keyFilePath` (absolute path or `~/...`); an unreadable explicit file does not silently select a different account.
+3. `TYPESAFE_API_KEY` or `JEV_API_KEY`.
+4. `~/.pi/agent/secrets/jev.key`, then the legacy `~/.pi/secrets/jev.key`.
+
+```bash
+mkdir -p ~/.pi/agent/secrets
+# Write your key to ~/.pi/agent/secrets/jev.key using your preferred secure editor.
+chmod 600 ~/.pi/agent/secrets/jev.key
+```
+
+Project-local secret-file auto-discovery is intentionally disabled. `/jev-config` masks API keys. Toggle operations never copy global credentials into project configuration.
+
+## Configuration
+
+- Global: `~/.pi/agent/jev-config.jsonc` (or `.json`).
+- Project overrides: `<cwd>/.pi/jev-config.jsonc` (or `.json`).
+- JSONC supports comments and trailing commas without modifying string values.
+- Saves update the active file, preserve JSONC comments, write only the appropriate layer/explicit updates, and use `0600` permissions.
 
 ```jsonc
 {
-  // TypeSafe Jev System One endpoint & model
+  // Endpoint and credentials are global-only, never trusted from a project.
   "endpoint": "https://api.typesafe.ai/v1/systemone",
   "model": "jev-latest",
+  // "keyFilePath": "~/.pi/agent/secrets/jev.key",
 
-  // Core feature toggles
-  "enableTailInjection": true,        // Inject HUD navigation card at prompt tail
-  "enableSubsystems": true,            // Locate codebase implementation subsystems
-  "enableSkills": true,                // Dynamically activate SOP skills from catalog
-  "enableMemories": true,              // Pre-inject Hermes [correction] & [preference] guards
-  "enableSystemPromptPruning": true,   // Prune unactivated skills from System Prompt
+  "enableTailInjection": true,
+  "enableSubsystems": true,
+  "enableSkills": true,
+  "enableMemories": true,
+  "enableSystemPromptPruning": true,
 
-  // Pipeline & resilience
-  "executionMode": "auto",             // "auto" (parallel >28k) | "parallel" (64K) | "unified" (32K)
-  "timeoutMs": 1500,                   // Millisecond timeout; fails open immediately on jitter
-
-  // Capacity quotas
-  "maxMemoryGuards": 50,               // Top memory guards evaluated per turn
-  "cacheTtlDays": 7,                   // CodeGraph Trie DSL cache TTL
-  "logDecisions": true                 // Partition telemetry logs to ~/.pi/agent/jev-sessions/
+  "executionMode": "auto", // auto | parallel | unified
+  "timeoutMs": 1500,
+  "maxMemoryGuards": 80,
+  "cacheTtlDays": 7,
+  "logDecisions": true,
 }
 ```
 
----
+### Privacy
 
-## 🎮 Interactive Commands
+Enabled routing sends the user task and enabled catalogs to the configured Jev service. `logDecisions` records original prompts, selected guards and raw answers locally under `~/.pi/agent/jev-sessions/<project>/<session>.jsonl`. Directories use `0700`, files use `0600`; multiple selected guards and token breakdowns are recorded. Set `logDecisions: false` if original prompts must not be retained. Automatic log retention/deletion is not implemented.
 
-| Slash Command | Description |
-| :--- | :--- |
-| `/jev-status` | Inspect Jev engine status, worktree info, feature switches, and CodeGraph size |
-| `/jev-config` | View full merged JSONC configuration in the terminal |
-| `/jev-toggle <target>` | Toggle feature live (`/jev-toggle skills`, `mem`, `subsystems`, `pruning`, `mode`) and persist to `.pi/jev-config.json` |
-| `/jev-refresh` | Force re-index and re-generate codebase Trie-Folded DSL |
-| `/jev-eval <query>` | Manually run Jev decision on a custom prompt |
+If an older version copied a global API key into project configuration, remove that legacy copy and consider rotating it if the file was shared or committed.
 
----
+## Commands
 
-## 🛡️ Diagnostics & Failure Alerts
+| Command | Purpose |
+| --- | --- |
+| `/jev-status` | Inspect graph, Git/worktree metadata, credentials presence and switches |
+| `/jev-config` | Inspect merged configuration with the API key redacted |
+| `/jev-toggle skills\|mem\|subsystems\|pruning\|mode` | Persist a switch to the active project JSON/JSONC file |
+| `/jev-refresh` | Rebuild the exported-symbol map |
+| `/jev-eval <query>` | Run an explicit diagnostic decision |
 
-`pi-jev-navigator` provides non-blocking, transparent status diagnostics:
-
-1. **Missing API Key**: Status footer shows `⚠️ Jev (No API Key)` and hints to `~/.pi/agent/secrets/jev.key`.
-2. **Malformed JSONC Config**: Emits terminal notification: `⚠️ Failed to parse global config [path]: Expected '}'. Using fallback defaults.`
-3. **Timeout / Network Jitter**: Automatically bypasses in 0ms (`Fail-Open`) and logs `bypassed: true` into the session telemetry file, ensuring the agent never hangs.
-
----
-
-## 📊 Benchmark & Economics (CPA Codebase: 579 Files, 133 Skills)
-
-| Metric | Traditional Agent (System Prompt stuffing) | `pi-jev-navigator` (Dual-Pipeline System One) | Improvement |
-| :--- | :--- | :--- | :--- |
-| **System Prompt Size** | ~18,000 Tokens (133+ skills) | **~2,000 Tokens (Core instructions only)** | **88.9% Reduction** |
-| **Prefix Cache Hit Rate** | Frequently broken by dynamic skill/mem edits | **100% Guaranteed Cache Hits** | **Rock Solid** |
-| **Memory Recall Rate** | Low (depends on LLM actively calling tools) | **100% Speculative Pre-Injection** | **Zero Regressions** |
-| **Decision Latency** | 2,000ms – 5,000ms (Generative LLMs) | **380ms – 460ms (Jev System One Parallel)** | **5x – 10x Faster** |
-| **Decision Cost** | ~$0.015 – $0.05 / turn | **$0.0009 / turn** | **95% Cheaper** |
-
----
-
-## 🧪 Testing
-
-Run the automated test suite (10 unit tests covering AST parsing, JSONC stripping, memory guards, and toggles):
+## Native CLI and packaging
 
 ```bash
-bun test
+node scripts/jev-graph.cjs -root /path/to/go/project -out /tmp/map.dsl
 ```
 
----
+The launcher selects a packaged binary for macOS, Linux or Windows on x64/ARM64. Invalid roots and output/read/write failures exit nonzero. Go syntax-invalid source files are currently omitted from the symbol map.
 
-## 📄 License
+`npm pack` runs `prepack` to build the JavaScript bundle, declarations and all six native targets. The package declares its Pi extension entry explicitly. Local development requires Go/Bun to build; consumers of the published package do not need Go.
+
+```bash
+bun run typecheck
+bun test
+bun run test:native
+bun run pack:check
+```
+
+Tests use isolated filesystem fixtures and offline transports. They cover lifecycle/role boundaries, images, failed routing, cancellation, response-body deadlines, credential origins, config persistence, collector identity, graph extraction and telemetry. No live Jev API is required.
+
+## License
 
 MIT © sususu

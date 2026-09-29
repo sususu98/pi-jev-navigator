@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import * as os from 'node:os';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CodeGraphExtractor } from '../src/graph/codegraph.js';
@@ -9,14 +10,9 @@ import { JevPrompter } from '../src/jev/prompter.js';
 import { DispatchDecision, JevAnswer, SkillSummary } from '../src/types.js';
 
 describe('pi-jev-navigator core test suite', () => {
-  const tmpDir = path.join(process.cwd(), '.tmp-test');
-
-  beforeEach(() => {
-    if (fs.existsSync(tmpDir)) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-    fs.mkdirSync(tmpDir, { recursive: true });
-  });
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-core-')); });
+  afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('should correctly identify and exclude test files', () => {
     const extractor = new CodeGraphExtractor();
@@ -107,7 +103,7 @@ describe('pi-jev-navigator core test suite', () => {
     expect(guidance).toContain('520.5ms');
   });
 
-  it('should handle multi-candidate probability extraction and Noul gating in Prompter', () => {
+  it('should map current question IDs, subsystem probabilities and actual safety text', () => {
     const prompter = new JevPrompter();
     const mockSkills: SkillSummary[] = [
       {
@@ -131,39 +127,35 @@ describe('pi-jev-navigator core test suite', () => {
     const mockAnswers: Record<string, JevAnswer> = {
       q1_target_subsystem: {
         type: 'choice',
-        choice: 'dir_internal_signature',
+        choice: 'dir_0',
         confidence: 0.85,
         probabilities: {
-          dir_internal_signature: 0.65,
-          dir_internal_translator: 0.30, // >= 0.25 threshold
+          dir_0: 0.65,
+          dir_1: 0.30, // >= 0.25 threshold
           none_or_new: 0.05,
         },
       },
-      q2_is_sop_needed: {
-        type: 'noul',
-        noul: 0.95, // P >= 0.6 -> Gate Passed
-        confidence: 0.95,
-      },
-      q3_active_skill: {
+      q2_active_skill: {
         type: 'choice',
-        choice: 'skill_claude_sig',
+        choice: 'skill_0',
         confidence: 0.98,
-        probabilities: { skill_claude_sig: 0.98, none: 0.02 },
+        probabilities: { skill_0: 0.98, none: 0.02 },
       },
-      q4_safety_guard: {
+      q3_safety_guard: {
         type: 'choice',
         choice: 'rule_0',
         confidence: 0.9,
         probabilities: { rule_0: 0.9, standard_safe: 0.1 },
       },
-      q5_complexity_risk: {
+      q4_complexity_risk: {
         type: 'score',
         score: 2.0,
         confidence: 0.95,
       },
     };
 
-    const decision = prompter.parseAnswers(mockAnswers, mockSkills, dirCriteriaMap, 450, 18000);
+    const decision = prompter.parseAnswers(mockAnswers, mockSkills, dirCriteriaMap, 450, 18000, [], ['rule_no_translator']);
+    expect(decision.safetyRules).toEqual(['rule_no_translator']);
 
     // Should contain both primary and secondary candidate
     expect(decision.targetSubsystems).toContain('internal/signature');
@@ -183,6 +175,11 @@ describe('pi-jev-navigator core test suite', () => {
     store.setRawFile('test.dsl', '[internal/api]\n  server.go->Start');
     const raw = store.getRawFile('test.dsl');
     expect(raw).toContain('[internal/api]');
+    const expired = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    fs.writeFileSync(path.join(tmpDir, '.pi', 'test-key.json'), JSON.stringify({ timestamp: expired, data: {} }));
+    fs.utimesSync(path.join(tmpDir, '.pi', 'test.dsl'), expired / 1000, expired / 1000);
+    expect(store.get('test-key')).toBeNull();
+    expect(store.getRawFile('test.dsl')).toBeNull();
   });
 
   it('should prune unactivated skills from System Prompt', () => {
@@ -209,7 +206,7 @@ The following skills provide specialized instructions for specific tasks.
     const prunedEmpty = injector.pruneSystemPromptSkills(mockSystemPrompt, undefined);
     expect(prunedEmpty).not.toContain('tavily-search');
     expect(prunedEmpty).not.toContain('local-cpa');
-    expect(prunedEmpty).toContain('No specialized SOP skills activated');
+    expect(prunedEmpty).toContain('Skill catalog routed');
     expect(prunedEmpty).toContain('<cwd>/Users/sususu</cwd>');
 
     // Case 2: Specific skill activated (local-cpa)
@@ -243,7 +240,7 @@ The following skills provide specialized instructions for specific tasks.
 
   it('should support live feature toggling via JevConfigStore', () => {
     const { JevConfigStore } = require('../src/config/config-store.ts');
-    const store = new JevConfigStore(tmpDir);
+    const store = new JevConfigStore(tmpDir, {}, path.join(tmpDir, 'home'));
     expect(store.get().enableSkills).toBe(true);
     expect(store.get().enableMemories).toBe(true);
 
@@ -279,10 +276,16 @@ The following skills provide specialized instructions for specific tasks.
     expect(parsed.timeoutMs).toBe(1500);
   });
 
-  it('should dynamically rank and cluster memories by frequency, recency, and project', () => {
+  it('should rank fixture memories and count exact duplicate records', () => {
     const { MemoryCollector } = require('../src/memory/collector.ts');
-    const collector = new MemoryCollector();
-    const memories = collector.collectMemories(process.cwd(), 20);
+    const home = path.join(tmpDir, 'home');
+    const memoryDir = path.join(home, '.pi', 'agent', 'pi-hermes-memory');
+    fs.mkdirSync(memoryDir, { recursive: true });
+    fs.writeFileSync(path.join(memoryDir, 'failures.md'), '[correction] Preserve uncommitted files\nNever delete them\n§\n[correction] Preserve uncommitted files\nNever delete them');
+    const collector = new MemoryCollector(home);
+    const memories = collector.collectMemories(tmpDir, 20);
+    expect(memories).toHaveLength(1);
+    expect(memories[0].frequency).toBe(2);
 
     expect(memories.length).toBeGreaterThan(0);
     // Highest ranked items should have score and frequency
@@ -294,5 +297,26 @@ The following skills provide specialized instructions for specific tasks.
     const jevFormatted = collector.formatForJev(memories);
     expect(jevFormatted.length).toBe(memories.length);
     expect(jevFormatted[0]).toContain(`[${topItem.category}]`);
+  });
+
+  it('should safeguard home directory and enforce ignoreDirs and maxFiles caps', () => {
+    const { CodeGraphExtractor } = require('../src/graph/codegraph.ts');
+    const extractor = new CodeGraphExtractor();
+
+    // 1. Home directory guard test
+    const homeResult = extractor.generateTrieDSL({ rootDir: os.homedir() });
+    expect(homeResult.totalFiles).toBe(0);
+    expect(homeResult.dsl).toBe('[~]\n');
+
+    // 2. Custom ignoreDirs test
+    const ignoredSubdir = path.join(tmpDir, 'custom_ignored_dir');
+    fs.mkdirSync(ignoredSubdir, { recursive: true });
+    fs.writeFileSync(path.join(ignoredSubdir, 'test.go'), 'package main\nfunc IgnoredFunc() {}');
+
+    const scanResult = extractor.generateTrieDSL({
+      rootDir: tmpDir,
+      ignoreDirs: ['custom_ignored_dir'],
+    });
+    expect(scanResult.dsl).not.toContain('IgnoredFunc');
   });
 });
