@@ -7,6 +7,7 @@ import type {
   SessionStartEvent,
 } from '@earendil-works/pi-coding-agent';
 import { CodeGraphExtractor } from './graph/codegraph.js';
+import { GitNexusAdapter } from './graph/gitnexus-adapter.js';
 import { SkillCollector } from './skills/collector.js';
 import { TTLStore } from './cache/ttl-store.js';
 import { JevClient } from './jev/client.js';
@@ -17,6 +18,7 @@ import { JevNavigatorConfig, DispatchDecision } from './types.js';
 export class JevNavigator {
   private config: JevNavigatorConfig;
   private extractor: CodeGraphExtractor;
+  private gitnexus: GitNexusAdapter;
   private collector: SkillCollector;
   private ttlStore: TTLStore;
   private client: JevClient;
@@ -34,6 +36,7 @@ export class JevNavigator {
     };
 
     this.extractor = new CodeGraphExtractor();
+    this.gitnexus = new GitNexusAdapter();
     this.collector = new SkillCollector();
     this.ttlStore = new TTLStore(this.projectRoot, this.config.cacheTtlDays);
     this.client = new JevClient(this.config.endpoint, this.config.model, this.config.apiKey);
@@ -138,11 +141,14 @@ export class JevNavigator {
   public getStatus(): Record<string, unknown> {
     const graph = this.getOrGenerateCodeGraph();
     const skills = this.collector.collectSkills(this.projectRoot);
+    const gitnexusStatus = this.gitnexus.checkStatus(this.projectRoot);
     const hasKey = !!this.client.getApiKey();
 
     return {
       projectRoot: this.projectRoot,
       apiKeyConfigured: hasKey,
+      gitnexusIndexed: gitnexusStatus.isIndexed,
+      gitnexusCommit: gitnexusStatus.commitSha || 'N/A',
       codebaseFilesIndexed: graph.totalFiles,
       estimatedTokens: graph.estimatedTokens,
       skillsCollected: skills.length,
