@@ -169,4 +169,34 @@ describe('Pi lifecycle integration', () => {
     expect(text).not.toContain('FAKE_SECRET');
     expect(text).toContain('[REDACTED]');
   });
+
+  it('prunes systemPromptOptions.skills natively in before_agent_start', async () => {
+    // 1. When activated skill matches
+    const h1 = harness({ evaluate: async () => decision('skill-a') });
+    const ev1: any = {
+      prompt: 'task',
+      systemPromptOptions: {
+        skills: [
+          { name: 'skill-a', description: 'desc a', filePath: '/a/SKILL.md' },
+          { name: 'skill-b', description: 'desc b', filePath: '/b/SKILL.md' },
+        ],
+      },
+    };
+    await h1.emit('before_agent_start', ev1, context());
+    expect(ev1.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a']);
+
+    // 2. When no skill is activated
+    const h2 = harness({ evaluate: async () => ({ ...decision(), activatedSkill: undefined }) });
+    const ev2: any = {
+      prompt: 'task',
+      systemPromptOptions: {
+        skills: [
+          { name: 'skill-a', description: 'desc a', filePath: '/a/SKILL.md' },
+          { name: 'skill-b', description: 'desc b', filePath: '/b/SKILL.md' },
+        ],
+      },
+    };
+    await h2.emit('before_agent_start', ev2, context());
+    expect(ev2.systemPromptOptions.skills).toEqual([]);
+  });
 });
