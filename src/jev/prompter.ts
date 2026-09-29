@@ -8,35 +8,42 @@ import {
 
 export class JevPrompter {
   /**
-   * Build the complete Jev System One questions payload for a user prompt
+   * Build the complete Jev System One questions payload for a user prompt,
+   * incorporating best practices from aaddrick/building-with-typesafe-jev:
+   * 1. Backticked state paths
+   * 2. Choice + Noul pairing for absolute gating
+   * 3. Situational score rubrics
+   * 4. Explicit catch-all options
    */
   public buildQuestions(
     trieDsl: string,
     skills: SkillSummary[],
     safetyRules: string[]
-  ): Record<string, JevQuestion> {
-    // 1. Extract candidate top-level directories from trieDsl
+  ): { questions: Record<string, JevQuestion>; dirCriteriaMap: Record<string, string> } {
+    // 1. Extract candidate directories from trieDsl
     const dirMatches = trieDsl.match(/^\[([^\]]+)\]/gm) || [];
     const topDirs = Array.from(new Set(dirMatches.map((m) => m.replace(/^\[|\]$/g, '')))).slice(0, 15);
 
     const dirCriteria: Record<string, string> = {};
-    for (let i = 0; i < Math.min(topDirs.length, 10); i++) {
+    const dirCriteriaMap: Record<string, string> = {};
+
+    for (let i = 0; i < Math.min(topDirs.length, 12); i++) {
       const d = topDirs[i];
       const key = `dir_${d.replace(/[^a-zA-Z0-9_]/g, '_')}`;
       dirCriteria[key] = d;
+      dirCriteriaMap[key] = d;
     }
-    if (Object.keys(dirCriteria).length === 0) {
-      dirCriteria['core_module'] = 'Core architecture files';
-    }
+    dirCriteria['none_or_new'] = 'None of these directories / Creating brand new modules';
+    dirCriteriaMap['none_or_new'] = 'General / New Modules';
 
-    // 2. Build skill criteria
+    // 2. Build skill criteria with catch-all
     const skillCriteria: Record<string, string> = {};
     for (let i = 0; i < Math.min(skills.length, 12); i++) {
       const s = skills[i];
       const key = `skill_${s.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-      skillCriteria[key] = `${s.name}: ${s.description.slice(0, 60)}`;
+      skillCriteria[key] = `${s.name}: ${s.description.slice(0, 70)}`;
     }
-    skillCriteria['none'] = 'No specialized skill needed, use general coding';
+    skillCriteria['none'] = 'No specialized SOP skill needed, standard general coding';
 
     // 3. Build safety rule criteria
     const ruleCriteria: Record<string, string> = {};
@@ -45,45 +52,61 @@ export class JevPrompter {
       const key = `rule_${i}`;
       ruleCriteria[key] = r;
     }
-    ruleCriteria['standard_safe'] = 'Standard safety guidelines apply';
+    ruleCriteria['standard_safe'] = 'Standard safety practices and clean code guidelines';
 
     const questions: Record<string, JevQuestion> = {
+      // Q1: Target Subsystem Choice
       q1_target_subsystem: {
         type: 'choice',
-        instructions: 'Which codebase directory or subsystem in codebase_trie_map is the primary target for this task?',
+        instructions:
+          'Looking at `codebase_trie_map`, which directory is the primary implementation target for `user_task`?',
         criteria: dirCriteria,
       },
-      q2_active_skill: {
+      // Q2: Absolute Noul Gate for Skill need
+      q2_is_sop_needed: {
+        type: 'noul',
+        instructions:
+          'Does `user_task` require a specialized domain SOP skill rather than standard general-purpose coding?',
+        statement: 'This task involves specific domain protocols, conventions, or external tooling SOPs.',
+      },
+      // Q3: Active Skill Choice
+      q3_active_skill: {
         type: 'choice',
-        instructions: 'From skills_catalog, which specialized SOP skill best matches this task requirement?',
+        instructions:
+          'If a specialized SOP is needed, which skill in `skills_catalog` best matches `user_task`?',
         criteria: skillCriteria,
       },
-      q3_safety_guard: {
+      // Q4: Safety Guard Choice
+      q4_safety_guard: {
         type: 'choice',
-        instructions: 'Which safety rule or project constraint must be strictly enforced during this task?',
+        instructions:
+          'Given the potential risks in `user_task`, which rule in `safety_rules` must be strictly enforced?',
         criteria: ruleCriteria,
       },
-      q4_complexity_risk: {
+      // Q5: Situational Risk Score
+      q5_complexity_risk: {
         type: 'score',
-        instructions: 'Rate the architectural complexity and regression risk of this requested change.',
+        instructions:
+          'Given the implementation scope across `codebase_trie_map`, what is the regression and blast radius risk of `user_task`?',
         criteria: [
-          '0: Purely informational or trivial cosmetic fix',
-          '1: Localized change within a single isolated file',
-          '2: Multi-module or cross-protocol change requiring careful regression validation',
-          '3: High-risk architectural change that could break critical core paths',
+          '0: Purely informational query, documentation read, or cosmetic text edit',
+          '1: Localized change contained within a single isolated file with existing test coverage',
+          '2: Multi-module or cross-protocol change with upstream 400/403 or network regression risk',
+          '3: High-risk architectural change, database schema migration, or breaking API modification',
         ],
       },
     };
 
-    return questions;
+    return { questions, dirCriteriaMap };
   }
 
   /**
-   * Parse Jev answers into a structured DispatchDecision
+   * Parse Jev answers into a structured DispatchDecision with multi-label probability extraction
    */
   public parseAnswers(
     answers: Record<string, JevAnswer>,
     skills: SkillSummary[],
+    dirCriteriaMap: Record<string, string>,
     latencyMs: number,
     inputTokens: number
   ): DispatchDecision {
@@ -91,36 +114,67 @@ export class JevPrompter {
       latencyMs,
       inputTokens,
       rawAnswers: answers,
+      targetSubsystems: [],
+      safetyRules: [],
     };
 
-    // Parse target subsystem
+    // 1. Multi-candidate Subsystem Extraction (Winner + Secondary probabilities >= 0.25)
     const q1 = answers['q1_target_subsystem'];
     if (q1 && q1.type === 'choice') {
-      decision.targetSubsystems = [q1.choice];
+      const targets: string[] = [];
+      const primaryTarget = dirCriteriaMap[q1.choice] || q1.choice;
+      if (q1.choice !== 'none_or_new') {
+        targets.push(primaryTarget);
+      }
+
+      // Check secondary probabilities for multi-module tasks
+      if (q1.probabilities) {
+        for (const [key, prob] of Object.entries(q1.probabilities)) {
+          if (key !== q1.choice && key !== 'none_or_new' && prob >= 0.25) {
+            const secondaryTarget = dirCriteriaMap[key] || key;
+            targets.push(secondaryTarget);
+          }
+        }
+      }
+
+      decision.targetSubsystems = Array.from(new Set(targets));
       decision.confidence = q1.confidence;
     }
 
-    // Parse active skill
-    const q2 = answers['q2_active_skill'];
-    if (q2 && q2.type === 'choice' && q2.choice !== 'none') {
-      const skillKey = q2.choice.replace(/^skill_/, '');
-      const matched = skills.find((s) => s.name.replace(/[^a-zA-Z0-9_]/g, '_') === skillKey || s.name === skillKey);
+    // 2. Absolute Noul Gating for Skill Activation (P >= 0.60)
+    const q2 = answers['q2_is_sop_needed'];
+    const q3 = answers['q3_active_skill'];
+    const isSopNeeded = q2 && q2.type === 'noul' ? q2.noul >= 0.6 : true;
+
+    if (isSopNeeded && q3 && q3.type === 'choice' && q3.choice !== 'none') {
+      const skillKey = q3.choice.replace(/^skill_/, '');
+      const matched = skills.find(
+        (s) => s.name.replace(/[^a-zA-Z0-9_]/g, '_') === skillKey || s.name === skillKey
+      );
       if (matched) {
         decision.activatedSkill = matched.name;
         decision.activatedSkillPath = matched.path;
       }
     }
 
-    // Parse safety rule
-    const q3 = answers['q3_safety_guard'];
-    if (q3 && q3.type === 'choice' && q3.choice !== 'standard_safe') {
-      decision.safetyRules = [q3.choice];
+    // 3. Safety rule extraction (Winner + Probabilities >= 0.3)
+    const q4 = answers['q4_safety_guard'];
+    if (q4 && q4.type === 'choice' && q4.choice !== 'standard_safe') {
+      decision.safetyRules = [q4.choice];
+      if (q4.probabilities) {
+        for (const [key, prob] of Object.entries(q4.probabilities)) {
+          if (key !== q4.choice && key !== 'standard_safe' && prob >= 0.3) {
+            decision.safetyRules.push(key);
+          }
+        }
+      }
+      decision.safetyRules = Array.from(new Set(decision.safetyRules));
     }
 
-    // Parse risk score
-    const q4 = answers['q4_complexity_risk'];
-    if (q4 && q4.type === 'score') {
-      decision.riskScore = q4.score;
+    // 4. Complexity Risk Score
+    const q5 = answers['q5_complexity_risk'];
+    if (q5 && q5.type === 'score') {
+      decision.riskScore = q5.score;
     }
 
     return decision;

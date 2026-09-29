@@ -89,7 +89,11 @@ export class JevNavigator {
     try {
       const graph = this.getOrGenerateCodeGraph();
       const skills = this.collector.collectSkills(this.projectRoot);
-      const questions = this.prompter.buildQuestions(graph.dsl, skills, safetyRules);
+      const { questions, dirCriteriaMap } = this.prompter.buildQuestions(
+        graph.dsl,
+        skills,
+        safetyRules
+      );
 
       const state = {
         user_task: userPrompt,
@@ -102,6 +106,7 @@ export class JevNavigator {
       const decision = this.prompter.parseAnswers(
         result.response.answers,
         skills,
+        dirCriteriaMap,
         result.latencyMs,
         result.response.usage.input_tokens
       );

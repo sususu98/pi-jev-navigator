@@ -6,7 +6,7 @@ import { SkillCollector } from '../src/skills/collector.js';
 import { TTLStore } from '../src/cache/ttl-store.js';
 import { TailInjector } from '../src/injector/tail-injector.js';
 import { JevPrompter } from '../src/jev/prompter.js';
-import { DispatchDecision } from '../src/types.js';
+import { DispatchDecision, JevAnswer, SkillSummary } from '../src/types.js';
 
 describe('pi-jev-navigator core test suite', () => {
   const tmpDir = path.join(process.cwd(), '.tmp-test');
@@ -105,6 +105,71 @@ describe('pi-jev-navigator core test suite', () => {
     expect(guidance).toContain('rule_no_translator; rule_fast_compile');
     expect(guidance).toContain('Architecture Risk Level: 2 (⚠️ High)');
     expect(guidance).toContain('520.5ms');
+  });
+
+  it('should handle multi-candidate probability extraction and Noul gating in Prompter', () => {
+    const prompter = new JevPrompter();
+    const mockSkills: SkillSummary[] = [
+      {
+        name: 'claude-sig',
+        description: 'Claude signature handling',
+        path: '/mock/skills/claude-sig/SKILL.md',
+      },
+    ];
+
+    const { questions, dirCriteriaMap } = prompter.buildQuestions(
+      '[internal/signature]\n  claude.go->Verify\n[internal/translator]\n  req.go->Convert',
+      mockSkills,
+      ['rule_no_translator']
+    );
+
+    // Verify backticked paths in questions
+    expect(questions.q1_target_subsystem.instructions).toContain('`codebase_trie_map`');
+    expect(questions.q1_target_subsystem.instructions).toContain('`user_task`');
+
+    // Simulate multi-module probability answers
+    const mockAnswers: Record<string, JevAnswer> = {
+      q1_target_subsystem: {
+        type: 'choice',
+        choice: 'dir_internal_signature',
+        confidence: 0.85,
+        probabilities: {
+          dir_internal_signature: 0.65,
+          dir_internal_translator: 0.30, // >= 0.25 threshold
+          none_or_new: 0.05,
+        },
+      },
+      q2_is_sop_needed: {
+        type: 'noul',
+        noul: 0.95, // P >= 0.6 -> Gate Passed
+        confidence: 0.95,
+      },
+      q3_active_skill: {
+        type: 'choice',
+        choice: 'skill_claude_sig',
+        confidence: 0.98,
+        probabilities: { skill_claude_sig: 0.98, none: 0.02 },
+      },
+      q4_safety_guard: {
+        type: 'choice',
+        choice: 'rule_0',
+        confidence: 0.9,
+        probabilities: { rule_0: 0.9, standard_safe: 0.1 },
+      },
+      q5_complexity_risk: {
+        type: 'score',
+        score: 2.0,
+        confidence: 0.95,
+      },
+    };
+
+    const decision = prompter.parseAnswers(mockAnswers, mockSkills, dirCriteriaMap, 450, 18000);
+
+    // Should contain both primary and secondary candidate
+    expect(decision.targetSubsystems).toContain('internal/signature');
+    expect(decision.targetSubsystems).toContain('internal/translator');
+    expect(decision.activatedSkill).toBe('claude-sig');
+    expect(decision.riskScore).toBe(2.0);
   });
 
   it('should handle TTL cache operations with expiration', () => {
