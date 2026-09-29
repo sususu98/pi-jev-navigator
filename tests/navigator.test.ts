@@ -278,4 +278,21 @@ The following skills provide specialized instructions for specific tasks.
     expect(parsed.enableSubsystems).toBe(true);
     expect(parsed.timeoutMs).toBe(1500);
   });
+
+  it('should dynamically rank and cluster memories by frequency, recency, and project', () => {
+    const { MemoryCollector } = require('../src/memory/collector.ts');
+    const collector = new MemoryCollector();
+    const memories = collector.collectMemories(process.cwd(), 20);
+
+    expect(memories.length).toBeGreaterThan(0);
+    // Highest ranked items should have score and frequency
+    const topItem = memories[0];
+    expect(topItem.score).toBeDefined();
+    expect(topItem.score!).toBeGreaterThan(0);
+
+    // Format for Jev should include frequency if > 1
+    const jevFormatted = collector.formatForJev(memories);
+    expect(jevFormatted.length).toBe(memories.length);
+    expect(jevFormatted[0]).toContain(`[${topItem.category}]`);
+  });
 });

@@ -48,9 +48,6 @@ export class TailInjector {
       }
     }
 
-    // Always enforce global CLI invariants at the navigation HUD
-    lines.push(`• 🚨 Operational Guard: 管道与文本搜索一律使用 rg 禁 grep；文件查找一律使用 fd 禁 find。`);
-
     if (decision.riskScore !== undefined) {
       const riskEmoji = decision.riskScore >= 2 ? '⚠️ High' : decision.riskScore >= 1 ? '⚡ Moderate' : '✅ Low';
       lines.push(`• 📊 Architecture Risk Level: ${decision.riskScore} (${riskEmoji})`);
