@@ -1,10 +1,17 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
-  InputEvent,
-  InputEventResult,
+  BeforeAgentStartEvent,
+  BeforeAgentStartEventResult,
+  BeforeProviderRequestEvent,
+  ContextWithSystemEvent,
+  ContextEventResult,
   SessionStartEvent,
+  TurnEndEvent,
+  AgentEndEvent,
 } from '@earendil-works/pi-coding-agent';
 import { CodeGraphExtractor } from './graph/codegraph.js';
 import { GitNexusAdapter } from './graph/gitnexus-adapter.js';
@@ -13,6 +20,7 @@ import { TTLStore } from './cache/ttl-store.js';
 import { JevClient } from './jev/client.js';
 import { JevPrompter } from './jev/prompter.js';
 import { TailInjector } from './injector/tail-injector.js';
+import { resolveGitContext, GitContext } from './graph/git.js';
 import { JevNavigatorConfig, DispatchDecision } from './types.js';
 
 export class JevNavigator {
@@ -84,7 +92,8 @@ export class JevNavigator {
    */
   public async evaluatePrompt(
     userPrompt: string,
-    safetyRules: string[] = []
+    safetyRules: string[] = [],
+    sessionMeta?: { sessionFile?: string; sessionId?: string }
   ): Promise<DispatchDecision | null> {
     try {
       const graph = this.getOrGenerateCodeGraph();
@@ -92,7 +101,8 @@ export class JevNavigator {
       const { questions, dirCriteriaMap } = this.prompter.buildQuestions(
         graph.dsl,
         skills,
-        safetyRules
+        safetyRules,
+        userPrompt
       );
 
       const state = {
@@ -111,6 +121,8 @@ export class JevNavigator {
         result.response.usage.input_tokens
       );
 
+      this.logDecisionToFile(userPrompt, decision, sessionMeta);
+
       return decision;
     } catch (err) {
       if (this.config.logDecisions) {
@@ -118,6 +130,66 @@ export class JevNavigator {
       }
       return null;
     }
+  }
+
+  /**
+   * Persist structured decision telemetry matching Pi's per-project per-session structure:
+   * ~/.pi/agent/jev-sessions/<project-slug>/<session-filename>.jsonl
+   */
+  public logDecisionToFile(
+    userPrompt: string,
+    decision: DispatchDecision,
+    sessionMeta?: { sessionFile?: string; sessionId?: string }
+  ): void {
+    if (!this.config.logDecisions) return;
+    try {
+      const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+      const baseJevDir = path.join(homeDir, '.pi', 'agent', 'jev-sessions');
+
+      const normalizedCwd = path.resolve(this.projectRoot).replace(/\\/g, '/');
+      const projectSlug = `--${normalizedCwd.replace(/^\/+/, '').replace(/\/+/g, '-')}--`;
+      const projectDir = path.join(baseJevDir, projectSlug);
+
+      if (!fs.existsSync(projectDir)) {
+        fs.mkdirSync(projectDir, { recursive: true });
+      }
+
+      let logFile: string;
+      if (sessionMeta?.sessionFile) {
+        logFile = path.join(projectDir, path.basename(sessionMeta.sessionFile));
+      } else if (sessionMeta?.sessionId) {
+        logFile = path.join(projectDir, `${sessionMeta.sessionId}.jsonl`);
+      } else {
+        const today = new Date().toISOString().slice(0, 10);
+        logFile = path.join(projectDir, `jev-${today}.jsonl`);
+      }
+
+      const entry = {
+        ts: Date.now(),
+        iso: new Date().toISOString(),
+        project: this.projectRoot,
+        session_id: sessionMeta?.sessionId || null,
+        session_file: sessionMeta?.sessionFile || null,
+        prompt: userPrompt,
+        latency_ms: decision.latencyMs,
+        input_tokens: decision.inputTokens,
+        target_subsystems: decision.targetSubsystems,
+        activated_skill: decision.activatedSkill || null,
+        risk_score: decision.riskScore,
+        confidence: decision.confidence,
+        raw_answers: decision.rawAnswers,
+      };
+      fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', 'utf-8');
+    } catch {
+      // Best-effort logging
+    }
+  }
+
+  /**
+   * Prune System Prompt skills according to Jev activation decision
+   */
+  public pruneSystemPrompt(systemPrompt: string, activatedSkill?: string): string {
+    return this.injector.pruneSystemPromptSkills(systemPrompt, activatedSkill);
   }
 
   /**
@@ -141,9 +213,10 @@ export class JevNavigator {
   }
 
   /**
-   * Get status summary
+   * Get status summary with full Git Worktree metadata
    */
   public getStatus(): Record<string, unknown> {
+    const gitCtx = resolveGitContext(this.projectRoot);
     const graph = this.getOrGenerateCodeGraph();
     const skills = this.collector.collectSkills(this.projectRoot);
     const gitnexusStatus = this.gitnexus.checkStatus(this.projectRoot);
@@ -151,6 +224,10 @@ export class JevNavigator {
 
     return {
       projectRoot: this.projectRoot,
+      isWorktree: gitCtx.isWorktree,
+      worktreeRoot: gitCtx.worktreeRoot,
+      mainRepoRoot: gitCtx.mainRepoRoot,
+      branch: gitCtx.branch || 'N/A',
       apiKeyConfigured: hasKey,
       gitnexusIndexed: gitnexusStatus.isIndexed,
       gitnexusCommit: gitnexusStatus.commitSha || 'N/A',
@@ -167,13 +244,17 @@ export class JevNavigator {
  * Conforms 100% to Pi Extension Development Specification
  */
 export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
-  let navigator: JevNavigator | null = null;
+  const navigators = new Map<string, JevNavigator>();
+  let currentTurnDecision: DispatchDecision | null = null;
 
   const getNavigator = (cwd: string) => {
-    if (!navigator) {
-      navigator = new JevNavigator(cwd);
+    const resolved = path.resolve(cwd);
+    let nav = navigators.get(resolved);
+    if (!nav) {
+      nav = new JevNavigator(resolved);
+      navigators.set(resolved, nav);
     }
-    return navigator;
+    return nav;
   };
 
   // 1. Session start: display status indicator in UI footer
@@ -187,38 +268,143 @@ export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
     }
   });
 
-  // 2. Intercept user input: inject tail navigation context before dispatching to LLM
-  pi.on('input', async (event: InputEvent, ctx: ExtensionContext): Promise<InputEventResult> => {
-    // Skip extension-injected or internal commands
-    if (event.source === 'extension' || !event.text || event.text.startsWith('/')) {
-      return { action: 'continue' };
+  // 2. Before Agent Start: evaluate prompt with Jev, prune System Prompt skills, and prepare navigation
+  pi.on('before_agent_start', async (event: BeforeAgentStartEvent, ctx: ExtensionContext): Promise<BeforeAgentStartEventResult | void> => {
+    const nav = getNavigator(ctx.cwd);
+    currentTurnDecision = null;
+
+    if (!event.prompt || event.prompt.startsWith('/')) {
+      return;
     }
 
-    const nav = getNavigator(ctx.cwd);
     try {
-      ctx.ui.setWorkingMessage('⚡ Jev System One routing...');
-      const result = await nav.processUserPrompt(event.text);
-      ctx.ui.setWorkingMessage(); // Clear working message
+      if (ctx.hasUI) {
+        ctx.ui.setWorkingMessage('⚡ Jev System One routing...');
+      }
+      const sessionMeta = {
+        sessionFile: ctx.sessionManager?.getSessionFile?.(),
+        sessionId: ctx.sessionManager?.getSessionId?.(),
+      };
+      const decision = await nav.evaluatePrompt(event.prompt, [], sessionMeta);
+      if (ctx.hasUI) {
+        ctx.ui.setWorkingMessage();
+      }
 
-      if (result.decision) {
-        ctx.ui.notify(
-          `⚡ Jev Routed: ${result.decision.targetSubsystems?.join(', ') || 'General'} (${result.decision.latencyMs?.toFixed(0)}ms)`,
-          'info'
-        );
+      if (decision) {
+        currentTurnDecision = decision;
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            `⚡ Jev Routed: ${decision.targetSubsystems?.join(', ') || 'General'}${decision.activatedSkill ? ` | Skill: ${decision.activatedSkill}` : ''} (${decision.latencyMs?.toFixed(0)}ms)`,
+            'info'
+          );
+        }
+
+        // Prune System Prompt: strip unactivated skills to save thousands of tokens
+        const prunedSystemPrompt = nav.pruneSystemPrompt(event.systemPrompt, decision.activatedSkill);
         return {
-          action: 'transform',
-          text: result.enrichedPrompt,
-          images: event.images,
+          systemPrompt: prunedSystemPrompt,
         };
       }
-    } catch {
-      ctx.ui.setWorkingMessage();
+    } catch (err) {
+      if (ctx.hasUI) {
+        ctx.ui.setWorkingMessage();
+      }
     }
-
-    return { action: 'continue' };
   });
 
-  // 3. Register Slash Command: /jev-status
+  // 3. Context Hook: dynamically prune System Prompt skills and inject tail navigation to LLM messages without polluting readline history
+  pi.on('context_with_system', async (event: ContextWithSystemEvent, _ctx: ExtensionContext): Promise<ContextEventResult | void> => {
+    if (!event.messages || event.messages.length === 0) {
+      return;
+    }
+
+    const injector = new TailInjector();
+    const activatedSkill = currentTurnDecision?.activatedSkill;
+
+    // Deep inspect every message in event.messages
+    for (const msg of event.messages) {
+      const m = msg as Record<string, unknown>;
+      if (typeof m.content === 'string') {
+        if (m.content.includes('<skills>')) {
+          m.content = injector.pruneSystemPromptSkills(m.content, activatedSkill);
+        }
+      } else if (Array.isArray(m.content)) {
+        for (const part of m.content) {
+          if (part && typeof part === 'object' && 'text' in part && typeof (part as Record<string, unknown>).text === 'string') {
+            const pText = (part as Record<string, unknown>).text as string;
+            if (pText.includes('<skills>')) {
+              (part as Record<string, unknown>).text = injector.pruneSystemPromptSkills(pText, activatedSkill);
+            }
+          }
+        }
+      }
+    }
+
+    // B. Inject tail navigation context to the latest user message
+    if (currentTurnDecision) {
+      const guidance = injector.formatTailGuidance(currentTurnDecision);
+      for (let i = event.messages.length - 1; i >= 0; i--) {
+        const msg = event.messages[i];
+        if (msg.role === 'user') {
+          if (typeof msg.content === 'string') {
+            if (!msg.content.includes('[System One Navigation Context')) {
+              msg.content = `${msg.content}${guidance}`;
+            }
+          } else if (Array.isArray(msg.content)) {
+            const lastPart = msg.content[msg.content.length - 1];
+            if (lastPart && 'text' in lastPart && typeof lastPart.text === 'string') {
+              if (!lastPart.text.includes('[System One Navigation Context')) {
+                lastPart.text = `${lastPart.text}${guidance}`;
+              }
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    return { messages: event.messages };
+  });
+
+  // 4. Provider Payload Hook: 100% guarantee System Prompt skill pruning before HTTP dispatch across all LLM providers
+  pi.on('before_provider_request', async (event: BeforeProviderRequestEvent, _ctx: ExtensionContext) => {
+    const payload = event.payload as Record<string, unknown> | null | undefined;
+    if (!payload) return;
+
+    try {
+      const injector = new TailInjector();
+      const activatedSkill = currentTurnDecision?.activatedSkill;
+
+      const traverseAndPrune = (obj: any): void => {
+        if (!obj || typeof obj !== 'object') return;
+        for (const key of Object.keys(obj)) {
+          const val = obj[key];
+          if (typeof val === 'string' && val.includes('<skills>')) {
+            obj[key] = injector.pruneSystemPromptSkills(val, activatedSkill);
+          } else if (typeof val === 'object' && val !== null) {
+            traverseAndPrune(val);
+          }
+        }
+      };
+
+      traverseAndPrune(payload);
+    } catch {
+      // Ignore
+    }
+
+    return payload;
+  });
+
+  // 5. Cleanup turn state on turn end or agent end
+  pi.on('turn_end', async (_event: TurnEndEvent, _ctx: ExtensionContext) => {
+    currentTurnDecision = null;
+  });
+
+  pi.on('agent_end', async (_event: AgentEndEvent, _ctx: ExtensionContext) => {
+    currentTurnDecision = null;
+  });
+
+  // 5. Register Slash Command: /jev-status
   pi.registerCommand('jev-status', {
     description: 'Display Jev System One engine and CodeGraph index status',
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
@@ -227,6 +413,9 @@ export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
       const statusStr = [
         '⚡ [TypeSafe Jev Navigator Status]',
         `• Project Root: ${status.projectRoot}`,
+        ...(status.isWorktree
+          ? [`• Git Worktree: Active [${status.branch}] (Main Repo: ${status.mainRepoRoot})`]
+          : [`• Git Branch: [${status.branch}]`]),
         `• API Key Bound: ${status.apiKeyConfigured ? '✅ YES' : '❌ NO (Set TYPESAFE_API_KEY or ~/.pi/agent/secrets/jev.key)'}`,
         `• Indexed Business Files: ${status.codebaseFilesIndexed} files`,
         `• CodeGraph Tokens: ~${Number(status.estimatedTokens).toLocaleString()} tokens`,
@@ -265,7 +454,11 @@ export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
 
       const nav = getNavigator(ctx.cwd);
       ctx.ui.setWorkingMessage('⚡ Jev evaluating query...');
-      const decision = await nav.evaluatePrompt(args);
+      const sessionMeta = {
+        sessionFile: ctx.sessionManager?.getSessionFile?.(),
+        sessionId: ctx.sessionManager?.getSessionId?.(),
+      };
+      const decision = await nav.evaluatePrompt(args, [], sessionMeta);
       ctx.ui.setWorkingMessage();
 
       if (!decision) {

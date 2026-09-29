@@ -15,7 +15,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:ts": "tsgo || tsc",
+    "build:ts": "bun build src/index.ts --outfile dist/index.js --target node --format esm --external @earendil-works/pi-coding-agent && tsc --emitDeclarationOnly",
     "build:native": "./scripts/build-native.sh",
     "build": "bun run build:ts && bun run build:native",
     "typecheck": "tsgo --noEmit || tsc --noEmit",

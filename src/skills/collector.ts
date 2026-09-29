@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SkillSummary } from '../types.js';
+import { resolveGitContext } from '../graph/git.js';
 
 export class SkillCollector {
   /**
@@ -47,17 +48,25 @@ export class SkillCollector {
   }
 
   /**
-   * Collect all available project and global skills
+   * Collect all available project and global skills with full Git Worktree support
    */
   public collectSkills(projectRoot: string): SkillSummary[] {
     const skillsMap = new Map<string, SkillSummary>();
     const homeDir = os.homedir();
+    const gitCtx = resolveGitContext(projectRoot);
 
     const searchDirs = [
-      path.join(projectRoot, '.agents', 'skills'),
-      path.join(projectRoot, '.pi', 'skills'),
+      path.join(gitCtx.worktreeRoot, '.agents', 'skills'),
+      path.join(gitCtx.worktreeRoot, '.pi', 'skills'),
+      ...(gitCtx.isWorktree
+        ? [
+            path.join(gitCtx.mainRepoRoot, '.agents', 'skills'),
+            path.join(gitCtx.mainRepoRoot, '.pi', 'skills'),
+          ]
+        : []),
       path.join(homeDir, '.agents', 'skills'),
       path.join(homeDir, '.pi', 'agent', 'skills'),
+      path.join(homeDir, '.pi', 'agent', 'projects-memory', gitCtx.projectName, 'skills'),
       path.join(homeDir, '.pi', 'agent', 'projects-memory', path.basename(projectRoot), 'skills'),
       path.join(homeDir, '.pi', 'agent', 'pi-hermes-memory', 'skills'),
     ];

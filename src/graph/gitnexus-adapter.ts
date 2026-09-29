@@ -1,6 +1,7 @@
 import { execSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { resolveGitContext } from './git.js';
 
 export interface GitNexusStatus {
   isIndexed: boolean;
@@ -12,10 +13,19 @@ export interface GitNexusStatus {
 
 export class GitNexusAdapter {
   /**
-   * Check if GitNexus is indexed for the given repository
+   * Check if GitNexus is indexed for the given repository (supporting worktrees)
    */
   public checkStatus(projectRoot: string): GitNexusStatus {
-    const gitnexusDir = path.join(projectRoot, '.gitnexus');
+    const gitCtx = resolveGitContext(projectRoot);
+    const worktreeGitnexus = path.join(gitCtx.worktreeRoot, '.gitnexus');
+    const mainGitnexus = path.join(gitCtx.mainRepoRoot, '.gitnexus');
+
+    const gitnexusDir = fs.existsSync(worktreeGitnexus)
+      ? worktreeGitnexus
+      : fs.existsSync(mainGitnexus)
+        ? mainGitnexus
+        : worktreeGitnexus;
+
     const isIndexed = fs.existsSync(gitnexusDir) && fs.existsSync(path.join(gitnexusDir, 'meta.json'));
     const runner = this.resolveRunner();
 

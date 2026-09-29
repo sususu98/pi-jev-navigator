@@ -56,6 +56,35 @@ export class TailInjector {
   }
 
   /**
+   * Prune unnecessary skills from System Prompt, retaining only the activated skill (if any)
+   */
+  public pruneSystemPromptSkills(systemPrompt: string, activatedSkillName?: string): string {
+    const skillsBlockMatch = systemPrompt.match(/<skills>[\s\S]*?<\/skills>/);
+    if (!skillsBlockMatch) {
+      return systemPrompt;
+    }
+
+    const fullSkillsBlock = skillsBlockMatch[0];
+
+    if (activatedSkillName && activatedSkillName !== 'none') {
+      const escapedName = activatedSkillName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Match exactly the <skill>...</skill> element containing the activated skill name
+      const skillRegex = new RegExp(`<skill>(?:(?!<skill>)[\\s\\S])*?<name>${escapedName}<\\/name>[\\s\\S]*?<\\/skill>`, 'i');
+      const match = fullSkillsBlock.match(skillRegex);
+      if (match) {
+        const singleSkillBlock = `<skills>\nThe following skill was activated by TypeSafe Jev System One:\n<available_skills>\n  ${match[0].trim()}\n</available_skills>\n</skills>`;
+        return systemPrompt.replace(fullSkillsBlock, singleSkillBlock);
+      }
+    }
+
+    // 0 skills activated: strip all skills to reduce thousands of tokens
+    return systemPrompt.replace(
+      fullSkillsBlock,
+      '<skills>\n<!-- TypeSafe Jev System One: No specialized SOP skills activated for this turn -->\n</skills>'
+    );
+  }
+
+  /**
    * Append guidance to user prompt safely without mutating system prompt
    */
   public injectToPrompt(originalPrompt: string, decision: DispatchDecision): string {

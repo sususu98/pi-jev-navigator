@@ -18,36 +18,35 @@ export class JevPrompter {
   public buildQuestions(
     trieDsl: string,
     skills: SkillSummary[],
-    safetyRules: string[]
+    safetyRules: string[],
+    _userPrompt: string = ''
   ): { questions: Record<string, JevQuestion>; dirCriteriaMap: Record<string, string> } {
-    // 1. Extract candidate directories from trieDsl
+    // 1. All codebase directories from trieDsl directly to Jev (No fragile client-side filtering)
     const dirMatches = trieDsl.match(/^\[([^\]]+)\]/gm) || [];
-    const topDirs = Array.from(new Set(dirMatches.map((m) => m.replace(/^\[|\]$/g, '')))).slice(0, 15);
+    const allDirs = Array.from(new Set(dirMatches.map((m) => m.replace(/^\[|\]$/g, ''))));
 
     const dirCriteria: Record<string, string> = {};
     const dirCriteriaMap: Record<string, string> = {};
 
-    for (let i = 0; i < Math.min(topDirs.length, 12); i++) {
-      const d = topDirs[i];
+    for (const d of allDirs) {
       const key = `dir_${d.replace(/[^a-zA-Z0-9_]/g, '_')}`;
       dirCriteria[key] = d;
       dirCriteriaMap[key] = d;
     }
-    dirCriteria['none_or_new'] = 'None of these directories / Creating brand new modules';
+    dirCriteria['none_or_new'] = 'General / New Modules / No specific directory';
     dirCriteriaMap['none_or_new'] = 'General / New Modules';
 
-    // 2. Build skill criteria with catch-all
+    // 2. All skills directly to Jev (Zero client-side drop, let Jev System One evaluate 100% of skills)
     const skillCriteria: Record<string, string> = {};
-    for (let i = 0; i < Math.min(skills.length, 12); i++) {
-      const s = skills[i];
+    for (const s of skills) {
       const key = `skill_${s.name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-      skillCriteria[key] = `${s.name}: ${s.description.slice(0, 70)}`;
+      skillCriteria[key] = `${s.name}: ${s.description.slice(0, 100)}`;
     }
     skillCriteria['none'] = 'No specialized SOP skill needed, standard general coding';
 
     // 3. Build safety rule criteria
     const ruleCriteria: Record<string, string> = {};
-    for (let i = 0; i < Math.min(safetyRules.length, 6); i++) {
+    for (let i = 0; i < safetyRules.length; i++) {
       const r = safetyRules[i];
       const key = `rule_${i}`;
       ruleCriteria[key] = r;

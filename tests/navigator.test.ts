@@ -184,4 +184,38 @@ describe('pi-jev-navigator core test suite', () => {
     const raw = store.getRawFile('test.dsl');
     expect(raw).toContain('[internal/api]');
   });
+
+  it('should prune unactivated skills from System Prompt', () => {
+    const injector = new TailInjector();
+    const mockSystemPrompt = `You are an expert coding assistant...
+
+<skills>
+The following skills provide specialized instructions for specific tasks.
+<available_skills>
+  <skill>
+    <name>tavily-search</name>
+    <description>Search web</description>
+  </skill>
+  <skill>
+    <name>local-cpa</name>
+    <description>Local CPA proxy management</description>
+  </skill>
+</available_skills>
+</skills>
+
+<cwd>/Users/sususu</cwd>`;
+
+    // Case 1: No skill activated
+    const prunedEmpty = injector.pruneSystemPromptSkills(mockSystemPrompt, undefined);
+    expect(prunedEmpty).not.toContain('tavily-search');
+    expect(prunedEmpty).not.toContain('local-cpa');
+    expect(prunedEmpty).toContain('No specialized SOP skills activated');
+    expect(prunedEmpty).toContain('<cwd>/Users/sususu</cwd>');
+
+    // Case 2: Specific skill activated (local-cpa)
+    const prunedSingle = injector.pruneSystemPromptSkills(mockSystemPrompt, 'local-cpa');
+    expect(prunedSingle).toContain('local-cpa');
+    expect(prunedSingle).not.toContain('tavily-search');
+    expect(prunedSingle).toContain('The following skill was activated by TypeSafe Jev');
+  });
 });
