@@ -21,8 +21,8 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   cacheTtlDays: 7,
   logDecisions: true,
   ignoreDirs: [
-    '.git', 'node_modules', 'vendor', 'dist', 'build', 'test-output', 'tmp', 'temp',
-    '.agents', '.pi', '.gitnexus', 'subagent-artifacts',
+    '.git', '.worktrees', 'node_modules', 'vendor', 'dist', 'build', 'test-output', 'tmp', 'temp',
+    '.agents', '.pi', '.gitnexus', '.llm-wiki', 'auths', 'logs', 'subagent-artifacts',
     'Library', 'Applications', '.cache', '.cargo', '.rustup', '.npm', '.bun', '.pnpm', '.yarn',
     '.local', '.vscode', '.idea', 'Downloads', 'Movies', 'Music', 'Pictures', 'VirtualBox VMs',
     '.cocoapods', '.gradle', '.m2', '.docker', '.orbstack', '.colima', '.venv', 'venv', 'env',
