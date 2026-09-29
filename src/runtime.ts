@@ -7,6 +7,33 @@ import { transformNavigationContext } from './injector/context-transform.js';
 
 /** Request-local transformations only; never rewrite provider payloads or persisted transcripts. */
 export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: string) => JevNavigator): void {
+  try {
+    pi.registerFlag?.('no-jev', {
+      description: 'Disable Jev System One context routing and tail injection for this run',
+      type: 'boolean',
+    });
+  } catch {
+    // Ignore if flag API not available or already registered
+  }
+
+  const isJevDisabled = (ctx: ExtensionContext): boolean => {
+    if (
+      process.env.JEV_DISABLE === '1' ||
+      process.env.PI_NO_JEV === '1' ||
+      process.env.DISABLE_JEV === '1'
+    ) {
+      return true;
+    }
+    try {
+      if ((ctx as any).flags?.['no-jev'] || (pi as any).getFlag?.('no-jev')) {
+        return true;
+      }
+    } catch {
+      // Ignore
+    }
+    return false;
+  };
+
   type Run = { decision?: DispatchDecision; guidance?: string; userTimestamp?: number };
   const runs = new Map<string, Run>();
   const keyFor = (ctx: ExtensionContext) => JSON.stringify([
@@ -18,7 +45,11 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     try {
       const nav = getNavigator(ctx.cwd);
       if (ctx.hasUI) {
-        ctx.ui.setStatus('jev', nav.hasApiKey() ? '⚡ Jev Active' : '⚠️ Jev (No API Key)');
+        if (isJevDisabled(ctx)) {
+          ctx.ui.setStatus('jev', '⏸️ Jev Disabled (Flag/Env)');
+        } else {
+          ctx.ui.setStatus('jev', nav.hasApiKey() ? '⚡ Jev Active' : '⚠️ Jev (No API Key)');
+        }
         for (const diagnostic of nav.getConfigStore().getDiagnostics()) ctx.ui.notify(diagnostic, 'warning');
       }
     } catch {
@@ -32,7 +63,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     runs.set(key, run); // invalidate any pending result from an earlier prompt in this session
     let workingMessage = false;
     try {
-      if (!event.prompt || event.prompt.startsWith('/')) return;
+      if (!event.prompt || event.prompt.startsWith('/') || isJevDisabled(ctx)) return;
       const nav = getNavigator(ctx.cwd);
       const config = nav.getConfig();
       if (!nav.hasApiKey() || config.enableTailInjection === false || ctx.signal?.aborted) return;
