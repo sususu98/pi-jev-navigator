@@ -213,7 +213,7 @@ The following skills provide specialized instructions for specific tasks.
     const prunedSingle = injector.pruneSystemPromptSkills(mockSystemPrompt, 'local-cpa');
     expect(prunedSingle).toContain('local-cpa');
     expect(prunedSingle).not.toContain('tavily-search');
-    expect(prunedSingle).toContain('The following skill was activated by TypeSafe Jev');
+    expect(prunedSingle).toContain('<available_skills>');
   });
 
   it('should format active memory guard into tail guidance', () => {
