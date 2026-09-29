@@ -49,10 +49,18 @@ export class TailInjector {
       lines.push(`• 📊 Architecture Risk Level: ${decision.riskScore} (${riskEmoji})`);
     }
 
-    if (decision.latencyMs && decision.inputTokens) {
-      lines.push(
-        `• ⚡ Jev Decision Stats: ${decision.latencyMs.toFixed(1)}ms | ${decision.inputTokens.toLocaleString()} Input Tokens`
-      );
+    if (decision.latencyMs) {
+      if (decision.pipelineMode === 'parallel' && decision.tokenBreakdown?.codeTokens && decision.tokenBreakdown?.memoryTokens) {
+        const codeK = (decision.tokenBreakdown.codeTokens / 1000).toFixed(1);
+        const memK = (decision.tokenBreakdown.memoryTokens / 1000).toFixed(1);
+        lines.push(
+          `• ⚡ Jev Decision Stats: ${decision.latencyMs.toFixed(1)}ms | Parallel Stream [Code: ${codeK}k + Mem: ${memK}k] (64K Capacity)`
+        );
+      } else if (decision.inputTokens) {
+        lines.push(
+          `• ⚡ Jev Decision Stats: ${decision.latencyMs.toFixed(1)}ms | ${decision.inputTokens.toLocaleString()} Input Tokens (${decision.pipelineMode || 'unified'})`
+        );
+      }
     }
 
     lines.push('---');

@@ -107,6 +107,9 @@ export class JevDualPipeline {
       );
 
       decision.pipelineMode = 'unified';
+      decision.tokenBreakdown = {
+        totalTokens: result.response.usage.input_tokens,
+      };
       return decision;
     } catch (err) {
       if (config.logDecisions) {
@@ -200,6 +203,11 @@ export class JevDualPipeline {
       );
 
       decision.pipelineMode = 'parallel';
+      decision.tokenBreakdown = {
+        codeTokens: res1.response.usage.input_tokens,
+        memoryTokens: res2.response.usage.input_tokens,
+        totalTokens,
+      };
       return decision;
     } catch (err) {
       if (config.logDecisions) {

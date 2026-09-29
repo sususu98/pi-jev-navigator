@@ -104,6 +104,11 @@ export interface DispatchDecision {
   rawAnswers?: Record<string, JevAnswer>;
   latencyMs?: number;
   inputTokens?: number;
+  tokenBreakdown?: {
+    codeTokens?: number;
+    memoryTokens?: number;
+    totalTokens?: number;
+  };
   pipelineMode?: ExecutionMode;
   bypassed?: boolean;
   bypassReason?: string;
