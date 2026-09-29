@@ -24,6 +24,9 @@
   ],
   "author": "sususu",
   "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "devDependencies": {
     "@types/node": "^22.13.0",
     "typescript": "^5.7.3"

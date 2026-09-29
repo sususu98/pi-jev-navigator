@@ -1,5 +1,11 @@
-import * as path from 'path';
-import * as fs from 'fs';
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+  InputEvent,
+  InputEventResult,
+  SessionStartEvent,
+} from '@earendil-works/pi-coding-agent';
 import { CodeGraphExtractor } from './graph/codegraph.js';
 import { SkillCollector } from './skills/collector.js';
 import { TTLStore } from './cache/ttl-store.js';
@@ -147,52 +153,127 @@ export class JevNavigator {
 
 /**
  * Pi Extension Entrypoint for pi-coding-agent
+ * Conforms 100% to Pi Extension Development Specification
  */
-export default function registerExtension(pi: any) {
-  const navigator = new JevNavigator(process.cwd());
+export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
+  let navigator: JevNavigator | null = null;
 
-  // Hook into prompt lifecycle
-  if (pi.on) {
-    pi.on('before_prompt', async (event: { prompt: string }) => {
-      if (!event.prompt || event.prompt.startsWith('/')) return;
+  const getNavigator = (cwd: string) => {
+    if (!navigator) {
+      navigator = new JevNavigator(cwd);
+    }
+    return navigator;
+  };
 
-      const result = await navigator.processUserPrompt(event.prompt);
+  // 1. Session start: display status indicator in UI footer
+  pi.on('session_start', async (_event: SessionStartEvent, ctx: ExtensionContext) => {
+    const nav = getNavigator(ctx.cwd);
+    const status = nav.getStatus();
+    if (status.apiKeyConfigured) {
+      ctx.ui.setStatus('jev', `⚡ Jev Active (${status.codebaseFilesIndexed} files)`);
+    } else {
+      ctx.ui.setStatus('jev', '⚠️ Jev (No API Key)');
+    }
+  });
+
+  // 2. Intercept user input: inject tail navigation context before dispatching to LLM
+  pi.on('input', async (event: InputEvent, ctx: ExtensionContext): Promise<InputEventResult> => {
+    // Skip extension-injected or internal commands
+    if (event.source === 'extension' || !event.text || event.text.startsWith('/')) {
+      return { action: 'continue' };
+    }
+
+    const nav = getNavigator(ctx.cwd);
+    try {
+      ctx.ui.setWorkingMessage('⚡ Jev System One routing...');
+      const result = await nav.processUserPrompt(event.text);
+      ctx.ui.setWorkingMessage(); // Clear working message
+
       if (result.decision) {
-        event.prompt = result.enrichedPrompt;
+        ctx.ui.notify(
+          `⚡ Jev Routed: ${result.decision.targetSubsystems?.join(', ') || 'General'} (${result.decision.latencyMs?.toFixed(0)}ms)`,
+          'info'
+        );
+        return {
+          action: 'transform',
+          text: result.enrichedPrompt,
+          images: event.images,
+        };
       }
-    });
-  }
+    } catch {
+      ctx.ui.setWorkingMessage();
+    }
 
-  // Register interactive slash commands
-  if (pi.registerCommand) {
-    pi.registerCommand({
-      name: 'jev-status',
-      description: 'Display Jev System One engine and CodeGraph index status',
-      handler: async () => {
-        const status = navigator.getStatus();
-        return `### ⚡ Jev Navigator Status\n\`\`\`json\n${JSON.stringify(status, null, 2)}\n\`\`\``;
-      },
-    });
+    return { action: 'continue' };
+  });
 
-    pi.registerCommand({
-      name: 'jev-refresh',
-      description: 'Force refresh the codebase Trie-Folded DSL graph',
-      handler: async () => {
-        const result = navigator.getOrGenerateCodeGraph(true);
-        return `✅ CodeGraph refreshed: Indexed ${result.totalFiles} files (~${result.estimatedTokens.toLocaleString()} tokens).`;
-      },
-    });
+  // 3. Register Slash Command: /jev-status
+  pi.registerCommand('jev-status', {
+    description: 'Display Jev System One engine and CodeGraph index status',
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const nav = getNavigator(ctx.cwd);
+      const status = nav.getStatus();
+      const statusStr = [
+        '⚡ [TypeSafe Jev Navigator Status]',
+        `• Project Root: ${status.projectRoot}`,
+        `• API Key Bound: ${status.apiKeyConfigured ? '✅ YES' : '❌ NO (Set TYPESAFE_API_KEY or ~/.pi/agent/secrets/jev.key)'}`,
+        `• Indexed Business Files: ${status.codebaseFilesIndexed} files`,
+        `• CodeGraph Tokens: ~${Number(status.estimatedTokens).toLocaleString()} tokens`,
+        `• Cached: ${status.cached ? '✅ 7-Day TTL Active' : '🔄 Freshly Generated'}`,
+        `• Skills Catalog: ${status.skillsCollected} available skills`,
+      ].join('\n');
 
-    pi.registerCommand({
-      name: 'jev-eval',
-      description: 'Manually test Jev evaluation on a query: /jev-eval <query>',
-      handler: async (args: string) => {
-        if (!args) return '⚠️ Usage: /jev-eval <your query>';
-        const decision = await navigator.evaluatePrompt(args);
-        return `### 🎯 Jev Decision Result\n\`\`\`json\n${JSON.stringify(decision, null, 2)}\n\`\`\``;
-      },
-    });
-  }
+      ctx.ui.notify(statusStr, 'info');
+    },
+  });
+
+  // 4. Register Slash Command: /jev-refresh
+  pi.registerCommand('jev-refresh', {
+    description: 'Force refresh the codebase Trie-Folded DSL graph',
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const nav = getNavigator(ctx.cwd);
+      ctx.ui.setWorkingMessage('🔄 Re-indexing codebase AST graph...');
+      const result = nav.getOrGenerateCodeGraph(true);
+      ctx.ui.setWorkingMessage();
+
+      ctx.ui.notify(
+        `✅ CodeGraph refreshed: Indexed ${result.totalFiles} files (~${result.estimatedTokens.toLocaleString()} tokens).`,
+        'info'
+      );
+    },
+  });
+
+  // 5. Register Slash Command: /jev-eval <query>
+  pi.registerCommand('jev-eval', {
+    description: 'Manually test Jev evaluation on a query: /jev-eval <query>',
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      if (!args.trim()) {
+        ctx.ui.notify('Usage: /jev-eval <your query>', 'warning');
+        return;
+      }
+
+      const nav = getNavigator(ctx.cwd);
+      ctx.ui.setWorkingMessage('⚡ Jev evaluating query...');
+      const decision = await nav.evaluatePrompt(args);
+      ctx.ui.setWorkingMessage();
+
+      if (!decision) {
+        ctx.ui.notify('❌ Jev evaluation failed or API key missing', 'error');
+        return;
+      }
+
+      const summary = [
+        '🎯 [Jev Decision Result]',
+        `• Target: ${decision.targetSubsystems?.join(', ') || 'N/A'} (Conf: ${decision.confidence ?? '1.0'})`,
+        `• Skill: ${decision.activatedSkill || 'None'}`,
+        `• Safety: ${decision.safetyRules?.join('; ') || 'Standard'}`,
+        `• Risk Level: ${decision.riskScore ?? 0}`,
+        `• Latency: ${decision.latencyMs?.toFixed(1)}ms | Tokens: ${decision.inputTokens?.toLocaleString()}`,
+      ].join('\n');
+
+      ctx.ui.notify(summary, 'info');
+    },
+  });
 }
 
 export * from './types.js';
