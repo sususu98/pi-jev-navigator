@@ -114,7 +114,7 @@ The extension supports full **JSONC** syntax (single-line `//`, multi-line `/* *
   "enableSystemPromptPruning": true,   // Prune unactivated skills from System Prompt
 
   // Pipeline & resilience
-  "executionMode": "auto",             // "auto" (parallel >22k) | "parallel" (64K) | "unified" (32K)
+  "executionMode": "auto",             // "auto" (parallel >28k) | "parallel" (64K) | "unified" (32K)
   "timeoutMs": 1500,                   // Millisecond timeout; fails open immediately on jitter
 
   // Capacity quotas

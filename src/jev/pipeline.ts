@@ -74,7 +74,7 @@ export class JevDualPipeline {
 
     const shouldUseParallel =
       mode === 'parallel' ||
-      (mode === 'auto' && exactPayloadTokens > 22000 && activeMemories.length > 0);
+      (mode === 'auto' && exactPayloadTokens > 28000 && activeMemories.length > 0);
 
     const t0 = Date.now();
 
