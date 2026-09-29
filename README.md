@@ -120,7 +120,7 @@ Project-local secret-file auto-discovery is intentionally disabled. `/jev-config
 
 ### Privacy
 
-Enabled routing sends the user task and enabled catalogs to the configured Jev service. `logDecisions` records original prompts, selected guards and raw answers locally under `~/.pi/agent/jev-sessions/<project>/<session>.jsonl`. Directories use `0700`, files use `0600`; multiple selected guards and token breakdowns are recorded. Set `logDecisions: false` if original prompts must not be retained. Automatic log retention/deletion is not implemented.
+Enabled routing sends the user task and enabled catalogs to the configured Jev service. `logDecisions` records original prompts, selected guards and raw answers locally under `~/.pi/agent/jev-sessions/<project>/<session>.jsonl`. On POSIX systems, directories use `0700` and files use `0600` (Windows access control depends on the account's ACLs); multiple selected guards and token breakdowns are recorded. Set `logDecisions: false` if original prompts must not be retained. Automatic log retention/deletion is not implemented.
 
 If an older version copied a global API key into project configuration, remove that legacy copy and consider rotating it if the file was shared or committed.
 

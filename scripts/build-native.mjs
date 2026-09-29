@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, copyFileSync, chmodSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,4 +17,12 @@ for (const platform of platforms) {
     if (result.error) console.error(result.error.message);
     if (result.status !== 0) process.exit(result.status ?? 1);
   }
+}
+// Preserve the historical local bin/jev-graph entry while npm uses the portable launcher.
+const hostPlatform = process.platform === 'win32' ? 'windows' : process.platform;
+const hostArch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
+if (platforms.includes(hostPlatform) && hostArch) {
+  const hostBinary = `jev-graph-${hostPlatform}-${hostArch}${hostPlatform === 'windows' ? '.exe' : ''}`;
+  copyFileSync(resolve(root, 'bin/native', hostBinary), resolve(root, 'bin/jev-graph'));
+  chmodSync(resolve(root, 'bin/jev-graph'), 0o755);
 }

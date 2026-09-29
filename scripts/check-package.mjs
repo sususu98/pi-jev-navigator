@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const metadata = JSON.parse(readFileSync('package.json', 'utf8'));
 const [pack] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], { encoding: 'utf8' }));
@@ -13,4 +15,6 @@ for (const platform of ['darwin', 'linux', 'windows']) {
   }
 }
 assert.deepEqual(metadata.pi.extensions, ['./dist/index.js']);
+const entry = await import(pathToFileURL(resolve(metadata.main)).href);
+assert.equal(typeof entry.default, 'function', 'Bundled extension must load in Node, not just Bun');
 console.log(`Package verified: ${files.size} files, main/types/CLI and all six native targets present.`);
