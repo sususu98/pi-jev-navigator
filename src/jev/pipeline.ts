@@ -34,42 +34,14 @@ export class JevDualPipeline {
     inputs: PipelineInputs,
     config: JevNavigatorConfig
   ): Promise<DispatchDecision | null> {
-    const { userPrompt, dsl, estimatedTokens, skills, memories, safetyRules } = inputs;
+    const { userPrompt, dsl, skills, memories, safetyRules } = inputs;
     const timeoutMs = config.timeoutMs || 1500;
     const mode = config.executionMode || 'auto';
-
-    // Estimate total tokens across graph + skills + memories
-    const skillTokens = skills.length * 45;
-    const memTokens = (config.enableMemories !== false ? memories.length : 0) * 45;
-    const totalEstimatedTokens = estimatedTokens + skillTokens + memTokens;
-
-    const shouldUseParallel =
-      mode === 'parallel' ||
-      (mode === 'auto' && totalEstimatedTokens > 22000 && config.enableMemories !== false && memories.length > 0);
-
-    const t0 = Date.now();
-
-    if (shouldUseParallel) {
-      return this.executeParallel(inputs, config, timeoutMs, t0);
-    } else {
-      return this.executeUnified(inputs, config, timeoutMs, t0);
-    }
-  }
-
-  /**
-   * Unified Single Request Pipeline (Under 22k tokens)
-   */
-  private async executeUnified(
-    inputs: PipelineInputs,
-    config: JevNavigatorConfig,
-    timeoutMs: number,
-    t0: number
-  ): Promise<DispatchDecision | null> {
-    const { userPrompt, dsl, skills, memories, safetyRules } = inputs;
 
     const activeSkills = config.enableSkills !== false ? skills : [];
     const activeMemories = config.enableMemories !== false ? memories : [];
 
+    // Pre-build questions to compute the exact serialized payload byte length
     const { questions, dirCriteriaMap } = this.prompter.buildQuestions(
       dsl,
       activeSkills,
@@ -95,6 +67,47 @@ export class JevDualPipeline {
       safety_rules: safetyRules,
     };
 
+    // Calculate exact serialized JSON payload bytes
+    const serializedBytes = Buffer.byteLength(JSON.stringify({ state, questions }), 'utf-8');
+    const exactPayloadTokens = Math.ceil(serializedBytes / 3.8);
+
+    const shouldUseParallel =
+      mode === 'parallel' ||
+      (mode === 'auto' && exactPayloadTokens > 22000 && activeMemories.length > 0);
+
+    const t0 = Date.now();
+
+    if (shouldUseParallel) {
+      return this.executeParallel(inputs, config, timeoutMs, t0);
+    } else {
+      return this.executeUnifiedWithPayload(
+        inputs,
+        config,
+        state,
+        questions,
+        dirCriteriaMap,
+        activeSkills,
+        activeMemories,
+        timeoutMs,
+        t0
+      );
+    }
+  }
+
+  /**
+   * Unified Single Request Pipeline using pre-built payload
+   */
+  private async executeUnifiedWithPayload(
+    inputs: PipelineInputs,
+    _config: JevNavigatorConfig,
+    state: JevState,
+    questions: Record<string, JevQuestion>,
+    dirCriteriaMap: Record<string, string>,
+    activeSkills: SkillSummary[],
+    activeMemories: MemoryGuard[],
+    timeoutMs: number,
+    t0: number
+  ): Promise<DispatchDecision | null> {
     try {
       const result = await this.client.evaluate({ state, questions }, timeoutMs);
       const decision = this.prompter.parseAnswers(
@@ -110,12 +123,15 @@ export class JevDualPipeline {
       decision.tokenBreakdown = {
         totalTokens: result.response.usage.input_tokens,
       };
+
       return decision;
     } catch (err) {
-      if (config.logDecisions) {
-        console.warn(`[pi-jev-navigator] Jev unified execution bypassed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      return null;
+      const latencyMs = Date.now() - t0;
+      return {
+        bypassed: true,
+        bypassReason: err instanceof Error ? err.message : String(err),
+        latencyMs,
+      };
     }
   }
 
