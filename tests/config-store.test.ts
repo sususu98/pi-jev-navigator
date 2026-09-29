@@ -98,12 +98,15 @@ const writeConfig = (file: string, contents: string) => {
     const home = temp();
     const project = temp();
     writeConfig(join(home, '.pi', 'agent', 'jev-config.jsonc'), '{ broken');
-    writeConfig(join(home, '.pi', 'agent', 'jev-config.json'), JSON.stringify({ timeoutMs: 10 }));
-    writeConfig(join(project, '.pi', 'jev-config.json'), JSON.stringify({ timeoutMs: -1, enableSkills: 'yes' }));
+    writeConfig(join(home, '.pi', 'agent', 'jev-config.json'), JSON.stringify({ timeoutMs: 10, ignoreDirs: ['.git', 'dist'] }));
+    writeConfig(join(project, '.pi', 'jev-config.json'), JSON.stringify({ timeoutMs: -1, enableSkills: 'yes', ignoreDirs: 'not-an-array' }));
     const store = new JevConfigStore(project, {}, home);
     assert.equal(store.get().timeoutMs, 10);
     assert.equal(store.get().enableSkills, true);
-    assert.ok(store.getDiagnostics().length >= 3);
+    assert.deepEqual(store.get().ignoreDirs, ['.git', 'dist']);
+    const diags = store.getDiagnostics();
+    assert.ok(diags.length >= 3);
+    assert.ok(diags.some((d) => d.includes('Ignoring invalid project config value for ignoreDirs')));
     const globalPath = store.saveGlobalConfig();
     chmodSync(globalPath, 0o600);
     assert.equal(statSync(globalPath).mode & 0o777, 0o600);

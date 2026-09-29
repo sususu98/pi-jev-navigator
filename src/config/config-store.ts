@@ -1,8 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser/lib/esm/main.js';
+import * as jsonc from 'jsonc-parser/lib/esm/main.js';
 import { JevNavigatorConfig, ExecutionMode } from '../types.js';
+
+export const { applyEdits, modify, parse } = jsonc;
+export type ParseError = jsonc.ParseError;
 
 export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFilePath' | 'endpoint' | 'model'>> & {
   endpoint: string;
@@ -73,10 +76,12 @@ function validateLayer(value: unknown, label: string, diagnostics: string[]): La
         ? typeof rawValue === 'string' && rawValue.length > 0
         : ['enableTailInjection', 'enableSubsystems', 'enableSkills', 'enableMemories', 'enableSystemPromptPruning', 'logDecisions'].includes(key)
           ? typeof rawValue === 'boolean'
-          : typeof rawValue === 'number' && Number.isFinite(rawValue) &&
-            (key === 'timeoutMs' ? Number.isSafeInteger(rawValue) && rawValue > 0
-              : key === 'maxMemoryGuards' ? Number.isSafeInteger(rawValue) && rawValue >= 0
-                : rawValue >= 0);
+          : key === 'ignoreDirs'
+            ? Array.isArray(rawValue) && rawValue.every((item) => typeof item === 'string')
+            : typeof rawValue === 'number' && Number.isFinite(rawValue) &&
+              (key === 'timeoutMs' ? Number.isSafeInteger(rawValue) && rawValue > 0
+                : key === 'maxMemoryGuards' ? Number.isSafeInteger(rawValue) && rawValue >= 0
+                  : rawValue >= 0);
     if (!valid) {
       diagnostics.push(`⚠️ Ignoring invalid ${label} config value for ${key}.`);
       continue;
