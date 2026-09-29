@@ -320,23 +320,36 @@ export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
     return nav;
   };
 
-  // 1. Session start: display status indicator in UI footer
+  // 1. Session start: display status indicator in UI footer & surface diagnostics
   pi.on('session_start', async (_event: SessionStartEvent, ctx: ExtensionContext) => {
     const nav = getNavigator(ctx.cwd);
     const status = nav.getStatus();
+    const diags = nav.getConfigStore().getDiagnostics();
+
     if (status.apiKeyConfigured) {
       ctx.ui.setStatus('jev', `⚡ Jev Active (${status.codebaseFilesIndexed} files)`);
     } else {
       ctx.ui.setStatus('jev', '⚠️ Jev (No API Key)');
+    }
+
+    if (diags.length > 0 && ctx.hasUI) {
+      for (const d of diags) {
+        ctx.ui.notify(d, 'warning');
+      }
     }
   });
 
   // 2. Before Agent Start: evaluate prompt with Jev, prune System Prompt skills, and prepare navigation
   pi.on('before_agent_start', async (event: BeforeAgentStartEvent, ctx: ExtensionContext): Promise<BeforeAgentStartEventResult | void> => {
     const nav = getNavigator(ctx.cwd);
+    const status = nav.getStatus();
     currentTurnDecision = null;
 
     if (!event.prompt || event.prompt.startsWith('/')) {
+      return;
+    }
+
+    if (!status.apiKeyConfigured) {
       return;
     }
 
@@ -483,6 +496,8 @@ export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
       const nav = getNavigator(ctx.cwd);
       const status = nav.getStatus();
       const cfg = nav.getConfig();
+      const diags = nav.getConfigStore().getDiagnostics();
+
       const statusStr = [
         '⚡ [TypeSafe Jev Navigator Status]',
         `• Project Root: ${status.projectRoot}`,
@@ -495,9 +510,10 @@ export default function registerJevNavigatorExtension(pi: ExtensionAPI) {
         `• Codebase DSL: ${status.codebaseFilesIndexed} business files (~${Number(status.estimatedTokens).toLocaleString()} tokens)`,
         `• Catalogs: ${status.skillsCollected} skills | ${status.memoriesCollected} active memory guards`,
         `• Cache: ${status.cached ? '✅ Active TTL Cache' : '🔄 Freshly Generated'}`,
+        ...(diags.length > 0 ? ['• ⚠️ Config Warnings:', ...diags.map((d) => `  ${d}`)] : []),
       ].join('\n');
 
-      ctx.ui.notify(statusStr, 'info');
+      ctx.ui.notify(statusStr, diags.length > 0 ? 'warning' : 'info');
     },
   });
 

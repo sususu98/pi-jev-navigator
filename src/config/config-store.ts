@@ -96,10 +96,15 @@ export function parseJsonc<T>(raw: string): T {
 export class JevConfigStore {
   private config: JevNavigatorConfig;
   private projectRoot: string;
+  private diagnostics: string[] = [];
 
   constructor(projectRoot: string = process.cwd(), overrides: JevNavigatorConfig = {}) {
     this.projectRoot = projectRoot;
     this.config = this.loadConfig(overrides);
+  }
+
+  public getDiagnostics(): string[] {
+    return [...this.diagnostics];
   }
 
   /**
@@ -117,6 +122,7 @@ export class JevConfigStore {
    * Load and merge configurations: Default -> Global (~/.pi/agent/jev-config.json[c]) -> Project (.pi/jev-config.json[c]) -> Overrides
    */
   private loadConfig(overrides: JevNavigatorConfig): JevNavigatorConfig {
+    this.diagnostics = [];
     const homeDir = os.homedir();
     const globalConfigPath = this.resolveConfigFile(path.join(homeDir, '.pi', 'agent', 'jev-config'));
     const projectConfigPath = this.resolveConfigFile(path.join(this.projectRoot, '.pi', 'jev-config'));
@@ -125,8 +131,10 @@ export class JevConfigStore {
     if (globalConfigPath && fs.existsSync(globalConfigPath)) {
       try {
         globalConfig = parseJsonc<Partial<JevNavigatorConfig>>(fs.readFileSync(globalConfigPath, 'utf-8'));
-      } catch {
-        // Ignore malformed global config
+      } catch (err) {
+        this.diagnostics.push(
+          `⚠️ Failed to parse global config [${globalConfigPath}]: ${err instanceof Error ? err.message : String(err)}. Using fallback defaults.`
+        );
       }
     }
 
@@ -134,8 +142,10 @@ export class JevConfigStore {
     if (projectConfigPath && fs.existsSync(projectConfigPath)) {
       try {
         projectConfig = parseJsonc<Partial<JevNavigatorConfig>>(fs.readFileSync(projectConfigPath, 'utf-8'));
-      } catch {
-        // Ignore malformed project config
+      } catch (err) {
+        this.diagnostics.push(
+          `⚠️ Failed to parse project config [${projectConfigPath}]: ${err instanceof Error ? err.message : String(err)}. Using global/fallback defaults.`
+        );
       }
     }
 
