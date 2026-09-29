@@ -70,29 +70,22 @@ export class JevPrompter {
           'Looking at `codebase_trie_map`, which directory is the primary implementation target for `user_task`?',
         criteria: dirCriteria,
       },
-      // Q2: Absolute Noul Gate for Skill need
-      q2_is_sop_needed: {
-        type: 'noul',
-        instructions:
-          'Does `user_task` require a specialized domain SOP skill rather than standard general-purpose coding?',
-        statement: 'This task involves specific domain protocols, conventions, or external tooling SOPs.',
-      },
-      // Q3: Active Skill Choice
-      q3_active_skill: {
+      // Q2: Active Skill Choice
+      q2_active_skill: {
         type: 'choice',
         instructions:
           'If a specialized SOP is needed, which skill in `skills_catalog` best matches `user_task`?',
         criteria: skillCriteria,
       },
-      // Q4: Safety Guard Choice
-      q4_safety_guard: {
+      // Q3: Safety Guard Choice
+      q3_safety_guard: {
         type: 'choice',
         instructions:
           'Given the potential risks in `user_task`, which rule in `safety_rules` must be strictly enforced?',
         criteria: ruleCriteria,
       },
-      // Q5: Situational Risk Score
-      q5_complexity_risk: {
+      // Q4: Situational Risk Score
+      q4_complexity_risk: {
         type: 'score',
         instructions:
           'Given the implementation scope across `codebase_trie_map`, what is the regression and blast radius risk of `user_task`?',
@@ -103,8 +96,8 @@ export class JevPrompter {
           '3: High-risk architectural change, database schema migration, or breaking API modification',
         ],
       },
-      // Q6: Active Memory Guard Choice
-      q6_memory_guard: {
+      // Q5: Active Memory Guard Choice
+      q5_memory_guard: {
         type: 'choice',
         instructions:
           'If a past correction, user preference, or operational constraint in `memory_guards` applies to `user_task`, which guard must be enforced?',
@@ -157,13 +150,10 @@ export class JevPrompter {
       decision.confidence = q1.confidence;
     }
 
-    // 2. Absolute Noul Gating for Skill Activation (P >= 0.60)
-    const q2 = answers['q2_is_sop_needed'];
-    const q3 = answers['q3_active_skill'];
-    const isSopNeeded = q2 && q2.type === 'noul' ? q2.noul >= 0.6 : true;
-
-    if (isSopNeeded && q3 && q3.type === 'choice' && q3.choice !== 'none') {
-      const skillKey = q3.choice.replace(/^skill_/, '');
+    // 2. Skill Activation (Winner choice !== 'none' and confidence >= 0.35)
+    const q2 = answers['q2_active_skill'] || answers['q3_active_skill'];
+    if (q2 && q2.type === 'choice' && q2.choice !== 'none' && (q2.confidence ?? 1) >= 0.35) {
+      const skillKey = q2.choice.replace(/^skill_/, '');
       const matched = skills.find(
         (s) => s.name.replace(/[^a-zA-Z0-9_]/g, '_') === skillKey || s.name === skillKey
       );
@@ -174,12 +164,12 @@ export class JevPrompter {
     }
 
     // 3. Safety rule extraction (Winner + Probabilities >= 0.3)
-    const q4 = answers['q4_safety_guard'];
-    if (q4 && q4.type === 'choice' && q4.choice !== 'standard_safe') {
-      decision.safetyRules = [q4.choice];
-      if (q4.probabilities) {
-        for (const [key, prob] of Object.entries(q4.probabilities)) {
-          if (key !== q4.choice && key !== 'standard_safe' && prob >= 0.3) {
+    const q3 = answers['q3_safety_guard'] || answers['q4_safety_guard'];
+    if (q3 && q3.type === 'choice' && q3.choice !== 'standard_safe') {
+      decision.safetyRules = [q3.choice];
+      if (q3.probabilities) {
+        for (const [key, prob] of Object.entries(q3.probabilities)) {
+          if (key !== q3.choice && key !== 'standard_safe' && prob >= 0.3) {
             decision.safetyRules.push(key);
           }
         }
@@ -188,15 +178,15 @@ export class JevPrompter {
     }
 
     // 4. Complexity Risk Score
-    const q5 = answers['q5_complexity_risk'];
-    if (q5 && q5.type === 'score') {
-      decision.riskScore = q5.score;
+    const q4 = answers['q4_complexity_risk'] || answers['q5_complexity_risk'];
+    if (q4 && q4.type === 'score') {
+      decision.riskScore = q4.score;
     }
 
     // 5. Memory Guard Extraction (Winner choice !== 'none' and confidence >= 0.35)
-    const q6 = answers['q6_memory_guard'] || answers['q7_memory_guard'];
-    if (q6 && q6.type === 'choice' && q6.choice !== 'none' && (q6.confidence ?? 1) >= 0.35) {
-      const matchedMemory = memories.find((m) => m.id === q6.choice);
+    const q5 = answers['q5_memory_guard'] || answers['q6_memory_guard'] || answers['q7_memory_guard'];
+    if (q5 && q5.type === 'choice' && q5.choice !== 'none' && (q5.confidence ?? 1) >= 0.35) {
+      const matchedMemory = memories.find((m) => m.id === q5.choice);
       if (matchedMemory) {
         decision.activatedMemoryGuard = matchedMemory;
       }

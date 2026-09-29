@@ -83,17 +83,15 @@ export class JevDualPipeline {
       delete questions.q1_target_subsystem;
     }
     if (config.enableSkills === false) {
-      delete questions.q2_is_sop_needed;
-      delete questions.q3_active_skill;
+      delete questions.q2_active_skill;
     }
     if (config.enableMemories === false) {
-      delete questions.q6_memory_guard;
+      delete questions.q5_memory_guard;
     }
 
     const state: JevState = {
       user_task: userPrompt,
       codebase_trie_map: dsl,
-      skills_catalog: activeSkills.map((s) => `${s.name}: ${s.description}`),
       safety_rules: safetyRules,
     };
 
@@ -143,20 +141,18 @@ export class JevDualPipeline {
       [], // omit memories in req 1
       userPrompt
     );
-    delete q1Questions.q6_memory_guard;
+    delete q1Questions.q5_memory_guard;
 
     if (config.enableSubsystems === false) {
       delete q1Questions.q1_target_subsystem;
     }
     if (config.enableSkills === false) {
-      delete q1Questions.q2_is_sop_needed;
-      delete q1Questions.q3_active_skill;
+      delete q1Questions.q2_active_skill;
     }
 
     const req1State: JevState = {
       user_task: userPrompt,
       codebase_trie_map: dsl,
-      skills_catalog: activeSkills.map((s) => `${s.name}: ${s.description}`),
       safety_rules: safetyRules,
     };
 
@@ -168,7 +164,7 @@ export class JevDualPipeline {
     memoryCriteria['none'] = 'No specific memory constraint or past correction applies to this task';
 
     const req2Questions: Record<string, JevQuestion> = {
-      q6_memory_guard: {
+      q5_memory_guard: {
         type: 'choice',
         instructions:
           'If a past correction, user preference, or operational constraint in `memory_guards` applies to `user_task`, which guard must be enforced?',
