@@ -209,11 +209,9 @@ The following skills provide specialized instructions for specific tasks.
     expect(prunedEmpty).toContain('Skill catalog routed');
     expect(prunedEmpty).toContain('<cwd>/Users/sususu</cwd>');
 
-    // Case 2: Specific skill activated (local-cpa)
+    // Case 2: Specific skill activated (local-cpa) -> still keeps system prompt 100% static
     const prunedSingle = injector.pruneSystemPromptSkills(mockSystemPrompt, 'local-cpa');
-    expect(prunedSingle).toContain('local-cpa');
-    expect(prunedSingle).not.toContain('tavily-search');
-    expect(prunedSingle).toContain('<available_skills>');
+    expect(prunedSingle).toBe(prunedEmpty);
   });
 
   it('should format active memory guard into tail guidance', () => {

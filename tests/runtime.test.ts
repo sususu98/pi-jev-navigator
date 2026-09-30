@@ -194,7 +194,7 @@ describe('Pi lifecycle integration', () => {
   });
 
   it('prunes systemPromptOptions.skills natively in before_agent_start', async () => {
-    // 1. When activated skill matches -> natively filters down to selected skill
+    // 1. When activated skill matches -> systemPromptOptions.skills is emptied to keep system prompt 100% static
     const h1 = harness({ evaluate: async () => decision('skill-a') });
     const ev1: any = {
       prompt: 'task',
@@ -206,7 +206,7 @@ describe('Pi lifecycle integration', () => {
       },
     };
     await h1.emit('before_agent_start', ev1, context());
-    expect(ev1.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a']);
+    expect(ev1.systemPromptOptions.skills).toEqual([]);
 
     // 2. When no skill is activated -> natively filters to empty array
     const h2 = harness({ evaluate: async () => ({ ...decision(), activatedSkill: undefined }) });

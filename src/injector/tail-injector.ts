@@ -45,23 +45,12 @@ export class TailInjector {
 
   /**
    * System Prompt Purity Invariant:
-   * Never mutate or prune system prompts. System prompts must remain 100% bit-for-bit
-   * static to preserve LCP/prefix cache and upstream session stickiness across turns.
+   * Keep system prompt 100% bit-for-bit static. Never dynamically inject individual
+   * skills into the system prompt. Activated skills are routed strictly via prompt tails.
    */
-  public pruneSystemPromptSkills(systemPrompt: string, activatedSkillName?: string): string {
+  public pruneSystemPromptSkills(systemPrompt: string, _activatedSkillName?: string): string {
     const availMatch = systemPrompt.match(/<available_skills>[\s\S]*?<\/available_skills>/);
     if (availMatch) {
-      if (activatedSkillName && activatedSkillName !== 'none') {
-        const escapedName = activatedSkillName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const skillRegex = new RegExp(`<skill>(?:(?!<skill>)[\\s\\S])*?<name>${escapedName}<\\/name>[\\s\\S]*?<\\/skill>`, 'i');
-        const match = availMatch[0].match(skillRegex);
-        if (match) {
-          return systemPrompt.replace(
-            availMatch[0],
-            `<available_skills>\n  ${match[0].trim()}\n</available_skills>`
-          );
-        }
-      }
       return systemPrompt.replace(
         availMatch[0],
         '<available_skills>\n<!-- Skill catalog routed by TypeSafe Jev; selected SOP paths are provided in navigation context. -->\n</available_skills>'
@@ -69,18 +58,8 @@ export class TailInjector {
     }
     const skillsBlockMatch = systemPrompt.match(/<skills>[\s\S]*?<\/skills>/);
     if (skillsBlockMatch) {
-      const fullSkillsBlock = skillsBlockMatch[0];
-      if (activatedSkillName && activatedSkillName !== 'none') {
-        const escapedName = activatedSkillName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const skillRegex = new RegExp(`<skill>(?:(?!<skill>)[\\s\\S])*?<name>${escapedName}<\\/name>[\\s\\S]*?<\\/skill>`, 'i');
-        const match = fullSkillsBlock.match(skillRegex);
-        if (match) {
-          const singleSkillBlock = `<skills>\nThe following skill was activated by TypeSafe Jev System One:\n<available_skills>\n  ${match[0].trim()}\n</available_skills>\n</skills>`;
-          return systemPrompt.replace(fullSkillsBlock, singleSkillBlock);
-        }
-      }
       return systemPrompt.replace(
-        fullSkillsBlock,
+        skillsBlockMatch[0],
         '<skills>\n<!-- Skill catalog routed by TypeSafe Jev; selected SOP paths are provided in navigation context. -->\n</skills>'
       );
     }

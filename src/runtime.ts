@@ -86,17 +86,13 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
       run.decision = decision;
       run.guidance = new TailInjector().formatTailGuidance(decision);
 
-      // Native Pi System Prompt Pruning:
-      // Natively filter event.systemPromptOptions.skills so Pi's built-in prompt builder
-      // only includes the activated skill, saving thousands of tokens without fragile string hacking.
+      // System Prompt Purity Invariant:
+      // Completely empty event.systemPromptOptions.skills to prevent Pi from injecting 56KB+
+      // of skill catalog into system instructions. System prompt stays 100% bit-for-bit static
+      // across all turns (even when skills are activated), preserving LCP cache permanently.
+      // Activated skills are exclusively routed via user prompt tail navigation.
       if (config.enableSystemPromptPruning !== false && config.enableSkills !== false && event.systemPromptOptions?.skills) {
-        if (decision.activatedSkill && decision.activatedSkill !== 'none') {
-          event.systemPromptOptions.skills = event.systemPromptOptions.skills.filter(
-            (s) => s.name === decision.activatedSkill
-          );
-        } else {
-          event.systemPromptOptions.skills = [];
-        }
+        event.systemPromptOptions.skills = [];
       }
 
       if (ctx.hasUI) {
