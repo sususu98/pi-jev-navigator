@@ -102,7 +102,7 @@ describe('Pi lifecycle integration', () => {
     expect(h.events.has('agent_end')).toBe(false);
   });
 
-  it('keeps guidance through tool batches and recovery, and cleans up on final settle', async () => {
+  it('keeps guidance through tool batches, recovery and historical replay after final settle', async () => {
     const h = harness();
     expect(await h.emit('before_agent_start', { prompt: 'task', systemPrompt: catalog })).toBeUndefined();
     const first = await h.emit('context_with_system', { messages: messages() });
@@ -110,7 +110,8 @@ describe('Pi lifecycle integration', () => {
     const second = await h.emit('context_with_system', { messages: messages() });
     expect(first.messages).toEqual(second.messages);
     await h.emit('agent_settled');
-    expect(await h.emit('context_with_system', { messages: messages() })).toBeUndefined();
+    const historical = await h.emit('context_with_system', { messages: messages() });
+    expect(historical.messages).toEqual(first.messages);
   });
 
   it('fails open for missing key, thrown error, null, bypass object and disabled tail', async () => {
@@ -158,9 +159,11 @@ describe('Pi lifecycle integration', () => {
       { name: 'manual', description: 'manual only', filePath: '/manual/SKILL.md', disableModelInvocation: true },
     ] } }, ctx);
     expect(h.nav.evaluatePrompt.mock.calls[0][3].skills).toEqual([{ name: 'custom', description: 'all custom metadata', path: '/custom/SKILL.md' }]);
-    await h.emit('context_with_system', { messages: messages() }, ctx);
+    const first = await h.emit('context_with_system', { messages: messages() }, ctx);
     const updated = messages(); updated.push({ role: 'user', content: 'different steering request', timestamp: 10 });
-    expect(await h.emit('context_with_system', { messages: updated }, ctx)).toBeUndefined();
+    const steered = await h.emit('context_with_system', { messages: updated }, ctx);
+    expect(steered.messages[1]).toEqual(first.messages[1]);
+    expect(steered.messages[4]).toEqual(updated[4]);
   });
 
   it('shows actual per-track usage in runtime notifications and explicit evaluation', async () => {
@@ -171,13 +174,14 @@ describe('Pi lifecycle integration', () => {
     const ctx = context(); ctx.hasUI = true;
     await h.emit('before_agent_start', { prompt: 'task' }, ctx);
     await h.commands['jev-eval'].handler('task', ctx);
-    for (const call of ctx.ui.notify.mock.calls) {
-      expect(call[0]).toContain('Track A (Overview)');
-      expect(call[0]).toContain('Track B (Skills + Mem)');
-      expect(call[0]).toContain('(Parallel)');
-      expect(call[0]).toContain('aggregate, 2 requests');
+    const telemetryCalls = ctx.ui.notify.mock.calls.map((c: any[]) => c[0]).filter((text: string) => text.includes('Track A'));
+    for (const text of telemetryCalls) {
+      expect(text).toContain('Track A (Overview)');
+      expect(text).toContain('Track B (Skills + Mem)');
+      expect(text).toContain('(Parallel)');
+      expect(text).toContain('aggregate, 2 requests');
     }
-    expect(ctx.ui.notify.mock.calls).toHaveLength(2);
+    expect(telemetryCalls).toHaveLength(2);
   });
 
   it('redacts the API key from the config command', async () => {
@@ -189,8 +193,8 @@ describe('Pi lifecycle integration', () => {
     expect(text).toContain('[REDACTED]');
   });
 
-  it('preserves systemPromptOptions.skills 100% static in before_agent_start to protect LCP cache', async () => {
-    // 1. When activated skill matches -> systemPromptOptions.skills must remain untouched
+  it('prunes systemPromptOptions.skills natively in before_agent_start', async () => {
+    // 1. When activated skill matches -> natively filters down to selected skill
     const h1 = harness({ evaluate: async () => decision('skill-a') });
     const ev1: any = {
       prompt: 'task',
@@ -202,9 +206,9 @@ describe('Pi lifecycle integration', () => {
       },
     };
     await h1.emit('before_agent_start', ev1, context());
-    expect(ev1.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a', 'skill-b']);
+    expect(ev1.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a']);
 
-    // 2. When no skill is activated -> systemPromptOptions.skills must remain untouched
+    // 2. When no skill is activated -> natively filters to empty array
     const h2 = harness({ evaluate: async () => ({ ...decision(), activatedSkill: undefined }) });
     const ev2: any = {
       prompt: 'task',
@@ -216,6 +220,20 @@ describe('Pi lifecycle integration', () => {
       },
     };
     await h2.emit('before_agent_start', ev2, context());
-    expect(ev2.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a', 'skill-b']);
+    expect(ev2.systemPromptOptions.skills).toEqual([]);
+
+    // 3. When pruning disabled via config -> skills preserved untouched
+    const h3 = harness({ cfg: { enableSystemPromptPruning: false }, evaluate: async () => decision('skill-a') });
+    const ev3: any = {
+      prompt: 'task',
+      systemPromptOptions: {
+        skills: [
+          { name: 'skill-a', description: 'desc a', filePath: '/a/SKILL.md' },
+          { name: 'skill-b', description: 'desc b', filePath: '/b/SKILL.md' },
+        ],
+      },
+    };
+    await h3.emit('before_agent_start', ev3, context());
+    expect(ev3.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a', 'skill-b']);
   });
 });

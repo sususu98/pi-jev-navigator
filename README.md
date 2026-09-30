@@ -4,7 +4,7 @@ Context routing for Pi Coding Agent using TypeSafe Jev: code directories, SOP sk
 
 ## Behavior and safety boundaries
 
-- **Request-local navigation:** selected subsystems, full skill paths and memory rules are appended to the latest user message sent to the model. Persisted transcripts and the original user content are not rewritten.
+- **Request-local navigation:** selected subsystems, full skill paths and memory rules are appended to the latest user message sent to the model. Original persisted messages are never rewritten. Frozen navigation tails are saved as non-context custom session entries and replayed on their original user messages.
 - **Scoped pruning:** after a successful decision, only system skill sections are replaced with a stable catalog placeholder. User messages, tool results, tool schemas and tool-call arguments are never searched/replaced. There is no provider-payload mutation hook.
 - **Whole-run lifetime:** guidance survives tool batches, retries and recovery until Pi's `agent_settled` event. Sessions are isolated and superseded decisions are discarded.
 - **Fail-open:** missing credentials, cancellation, invalid responses and request failures leave native context unchanged. A failed decision is not interpreted as “select no skills”.
@@ -24,9 +24,10 @@ before_agent_start
   → validate every answer against its request criteria
 context_with_system (every model request)
   → keep system prompt and native skill catalog unchanged
-  → append cached navigation guidance, including full SOP file paths
+  → freeze the current user tail once in non-context session metadata
+  → replay unchanged tails for all retained user messages on the active branch
 agent_settled / session_shutdown
-  → clear session-scoped decision
+  → clear volatile run state; durable historical tails remain replayable
 ```
 
 Directory and skill candidates are sent in full: there is **no client-side keyword or semantic pre-filter**. Candidate IDs are collision-free within a request. Pi's canonical skill catalog supplies package/custom-path and resource-selection behavior; learned Hermes SOPs supplement it without overriding native names. Standalone library usage also supports recursive directories, symlinks, YAML frontmatter, explicit paths and literal skill paths from settings. Manual-only skills are not auto-selected.
@@ -38,6 +39,12 @@ Bounded lexical queries use task identifiers and mechanical Chinese trigram segm
 `memoryCandidateLimit` defaults to **64** and `memoryCandidateTokens` to **8K estimated tokens** for the complete serialized memory-choice question. Whole records that do not fit are omitted, never clipped; candidate limits are separate from `maxInjectedMemoryGuards` (default **3**). Stable SQLite IDs deduplicate results without merging similar rules, and every retrieval sees a fresh read transaction. A missing, incompatible, corrupt, empty or locked database returns no memory candidates, **never a whole-Markdown fallback**; graph/skill routing may still proceed. The old Markdown collector remains only for standalone compatibility. No database writes, synchronization, consolidation or pinned-instruction re-injection occurs.
 
 Cards/status/telemetry distinguish eligible store size, unique retrieved results, candidates submitted, selected guards, retrieval latency, budget omissions and estimated memory tokens. An eligible corpus of 1,800 records does not mean 1,800 records were sent.
+
+### Cross-turn prompt-cache invariant
+
+Request-local injection must also preserve **the entire historical wire prefix**, not just the system prompt. A user message that was sent with a navigation tail must retain that exact tail on every subsequent request. Navigator freezes the complete string once (including Skill paths, Memory rules, latency and token statistics) in a `jev-navigation-tail-v1` custom entry through `pi.appendEntry()`. These entries are not model messages; the raw user transcript stays untouched. Replay follows `getBranch()` and native message provenance, with entry IDs, timestamps and canonical content fingerprints. It never re-evaluates or reformats old packets.
+
+New routing failures, disabled routing, steering and idle/cancelled contexts do not remove earlier tails. Reload/resume restores them from the session tree; compaction replays only messages still present. Empty decisions are frozen too, and failed metadata persistence cannot publish a transient new tail. A host that completely unloads the extension cannot replay its metadata. Old sessions created before this fix have no frozen packets: their exact missing tails cannot be invented, so the first request after upgrading may rebuild cache. Other extensions, model changes and upstream cache eviction can still invalidate cache independently.
 
 ### Auto routing and capacity
 

@@ -21,7 +21,7 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   enableSubsystems: true,
   enableSkills: true,
   enableMemories: true,
-  enableSystemPromptPruning: false,
+  enableSystemPromptPruning: true,
   executionMode: 'auto',
   timeoutMs: 1500,
   maxMemoryGuards: 80, // legacy configuration only; never a routing candidate cutoff

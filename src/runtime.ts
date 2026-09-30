@@ -3,8 +3,8 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import type { JevNavigator } from './index.js';
 import type { DispatchDecision } from './types.js';
 import { TailInjector } from './injector/tail-injector.js';
-import { formatRoutingStats } from './jev/stats.js';
-import { transformNavigationContext } from './injector/context-transform.js';
+import { formatRoutingStats, formatMemoryRetrieval } from './jev/stats.js';
+import { NavigationTailLedger, navigationMessageKey } from './injector/tail-ledger.js';
 
 /** Request-local transformations only; never rewrite provider payloads or persisted transcripts. */
 export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: string) => JevNavigator): void {
@@ -35,14 +35,16 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     return false;
   };
 
-  type Run = { decision?: DispatchDecision; guidance?: string; userTimestamp?: number };
+  type Run = { decision?: DispatchDecision; guidance?: string; userKey?: string; userEntryId?: string };
   const runs = new Map<string, Run>();
+  const ledger = new NavigationTailLedger(pi);
   const keyFor = (ctx: ExtensionContext) => JSON.stringify([
     path.resolve(ctx.cwd), ctx.sessionManager?.getSessionId?.() ?? ctx.sessionManager?.getSessionFile?.() ?? '',
   ]);
 
   pi.on('session_start', async (_event, ctx) => {
     runs.delete(keyFor(ctx));
+    ledger.clearFallback(keyFor(ctx));
     try {
       const nav = getNavigator(ctx.cwd);
       if (ctx.hasUI) {
@@ -84,6 +86,19 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
       run.decision = decision;
       run.guidance = new TailInjector().formatTailGuidance(decision);
 
+      // Native Pi System Prompt Pruning:
+      // Natively filter event.systemPromptOptions.skills so Pi's built-in prompt builder
+      // only includes the activated skill, saving thousands of tokens without fragile string hacking.
+      if (config.enableSystemPromptPruning !== false && config.enableSkills !== false && event.systemPromptOptions?.skills) {
+        if (decision.activatedSkill && decision.activatedSkill !== 'none') {
+          event.systemPromptOptions.skills = event.systemPromptOptions.skills.filter(
+            (s) => s.name === decision.activatedSkill
+          );
+        } else {
+          event.systemPromptOptions.skills = [];
+        }
+      }
+
       if (ctx.hasUI) {
         const parts = [`Subsystem: ${decision.targetSubsystems?.join(', ') || 'General'}`];
         if (decision.activatedSkill) parts.push(`Skill: ${decision.activatedSkill}`);
@@ -101,23 +116,46 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     }
   });
 
-  pi.on('context_with_system', async (event, ctx) => {
+  // Initial user messages are finalized before the first provider request. Bind before
+  // a possible steering message can become the newest user in that request clone.
+  pi.on('message_end', (event, ctx) => {
     const run = runs.get(keyFor(ctx));
-    if (!run?.decision || ctx.signal?.aborted) return;
-    let latestUser: (typeof event.messages)[number] | undefined;
-    for (let i = event.messages.length - 1; i >= 0; i--) {
-      if (event.messages[i].role === 'user') { latestUser = event.messages[i]; break; }
+    if (run && run.userKey === undefined && event.message.role === 'user') {
+      run.userKey = navigationMessageKey(event.message);
     }
-    if (!latestUser) return;
-    // Steering messages need a fresh decision; do not attach a previous task's constraints.
-    if (run.userTimestamp !== undefined && run.userTimestamp !== latestUser.timestamp) return;
-    run.userTimestamp = latestUser.timestamp;
-    const messages = transformNavigationContext(event.messages, run.decision, getNavigator(ctx.cwd).getConfig(), run.guidance);
-    return { messages };
+  });
+
+  pi.on('context_with_system', async (event, ctx) => {
+    // Even cancellation/idle warming must keep the historical wire prefix unchanged.
+    const key = keyFor(ctx);
+    const run = runs.get(key);
+    let latestIndex = -1;
+    for (let i = event.messages.length - 1; i >= 0; i--) {
+      if (event.messages[i].role === 'user') { latestIndex = i; break; }
+    }
+    let current: { index: number; guidance: string; userEntryId?: string; bind?: (id: string) => void } | undefined;
+    if (run && latestIndex >= 0 && !ctx.signal?.aborted) {
+      const messageKey = navigationMessageKey(event.messages[latestIndex]);
+      if (run.userKey === undefined) run.userKey = messageKey;
+      // Steering/new branches need a fresh decision. Still replay ALL historical tails.
+      if (run.userKey === messageKey) current = {
+        index: latestIndex, guidance: run.guidance ?? '', userEntryId: run.userEntryId,
+        bind: id => { run.userEntryId = id; },
+      };
+    }
+    const messages = ledger.replay(event.messages, ctx, key, current);
+    if (messages !== event.messages || run?.guidance) return { messages };
   });
 
   // turn_end fires after every tool batch; agent_end can precede recovery/continuations.
   // Keep guidance for the whole run, including retries, until Pi's final settle boundary.
   pi.on('agent_settled', async (_event, ctx) => { runs.delete(keyFor(ctx)); });
-  pi.on('session_shutdown', async (_event, ctx) => { runs.delete(keyFor(ctx)); });
+  pi.on('session_tree', async (_event, ctx) => {
+    runs.delete(keyFor(ctx));
+    ledger.clearFallback(keyFor(ctx));
+  });
+  pi.on('session_shutdown', async (_event, ctx) => {
+    runs.delete(keyFor(ctx));
+    ledger.clearFallback(keyFor(ctx));
+  });
 }

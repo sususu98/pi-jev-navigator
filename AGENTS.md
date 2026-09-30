@@ -34,6 +34,7 @@ node scripts/check-package.mjs
 * The System Prompt must remain **100% static** across the entire session to protect upstream Prefix Cache (LCP Merkle Root) and prevent account re-binding.
 * Dynamic navigation packets (Target Subsystem, Recommended SOP Skill, Active Memory Guard, Risk Score) must **strictly be injected to the tail of user prompts (`TailInjector`)**.
 * System Prompts and host skills must NEVER be mutated, spliced, or pruned dynamically under any circumstance.
+* **Historical wire prefix invariant**: request-local tails must remain present, byte-for-byte, on their original user messages in every later request. Freeze the complete tail once in non-context session custom entries; replay only the active branch and retained messages. Never remove old tails on settle, new prompts, bypass/disable, reload or resume, and never recompute their dynamic statistics. Original user messages stay unchanged. Cross-run Skill/SOP/tool-history prefix equality is a mandatory regression test.
 
 ### 2. Jev Relevance Evaluation, Skill Metadata & Memory Scope
 * **Strictly forbidden**: Never hardcode client-side keyword regexes, manual topic cluster heuristics (e.g. `if (title.includes('grep'))`), or heuristic skill/directory slicing to guess task relevance. Jev performs relevance evaluation.
