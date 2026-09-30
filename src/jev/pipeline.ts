@@ -50,7 +50,7 @@ export class JevDualPipeline {
       if (!parallel) {
         const result = await this.client.evaluate({ state, questions }, timeoutMs, requestSignal);
         const decision = this.prompter.parseAnswers(result.response.answers, skills, dirCriteriaMap,
-          Date.now() - t0, result.response.usage.input_tokens, memories, inputs.safetyRules);
+          Date.now() - t0, result.response.usage.input_tokens, memories, inputs.safetyRules, config.maxInjectedMemoryGuards ?? 3);
         decision.pipelineMode = 'unified';
         decision.tokenBreakdown = { totalTokens: result.response.usage.input_tokens };
         return decision;
@@ -64,7 +64,7 @@ export class JevDualPipeline {
       const totalTokens = codeResult.response.usage.input_tokens + memoryResult.response.usage.input_tokens;
       const decision = this.prompter.parseAnswers(
         { ...codeResult.response.answers, ...memoryResult.response.answers },
-        skills, dirCriteriaMap, Date.now() - t0, totalTokens, memories, inputs.safetyRules
+        skills, dirCriteriaMap, Date.now() - t0, totalTokens, memories, inputs.safetyRules, config.maxInjectedMemoryGuards ?? 3
       );
       decision.pipelineMode = 'parallel';
       decision.tokenBreakdown = {

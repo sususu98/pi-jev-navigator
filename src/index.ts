@@ -101,7 +101,7 @@ export class JevNavigator {
         }
       }
       const memories = config.enableMemories !== false
-        ? this.memoryCollector.collectMemories(this.projectRoot, config.maxMemoryGuards ?? 80) : [];
+        ? this.memoryCollector.collectMemories(this.projectRoot) : [];
       const decision = await this.pipeline.execute({
         userPrompt, dsl: graph.dsl, estimatedTokens: graph.estimatedTokens, skills, memories, safetyRules,
       }, config, options.signal);
@@ -180,7 +180,7 @@ export class JevNavigator {
       gitnexusIndexed: gitnexus.isIndexed, gitnexusCommit: gitnexus.commitSha || 'N/A',
       codebaseFilesIndexed: graph.totalFiles, estimatedTokens: graph.estimatedTokens,
       skillsCollected: this.collector.collectSkills(this.projectRoot).length,
-      memoriesCollected: this.memoryCollector.collectMemories(this.projectRoot, this.getConfig().maxMemoryGuards ?? 80).length,
+      memoriesCollected: this.memoryCollector.collectMemories(this.projectRoot).length,
       cached: graph.fromCache,
     };
   }

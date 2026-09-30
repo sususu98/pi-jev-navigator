@@ -114,7 +114,7 @@ export class MemoryCollector {
    * Collect active memory constraints across Hermes memory store and project memory
    * Pure metadata-driven ranking (Recency + Category Hierarchy + Project Scope) with ZERO client-side keyword heuristics.
    */
-  public collectMemories(projectRoot: string = process.cwd(), maxTotal: number = 50): MemoryGuard[] {
+  public collectMemories(projectRoot: string = process.cwd(), maxTotal: number = Infinity): MemoryGuard[] {
     const gitCtx = resolveGitContext(projectRoot);
     const targetProject = gitCtx.projectName || 'default';
 
@@ -147,7 +147,7 @@ export class MemoryCollector {
           if (!parsed) continue;
 
           // Project boundary filter: only keep target project and global memories
-          if (parsed.project !== 'global' && parsed.project !== targetProject && targetProject !== 'default') {
+          if (parsed.project !== 'global' && parsed.project !== targetProject) {
             continue;
           }
 

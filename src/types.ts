@@ -129,7 +129,10 @@ export interface JevNavigatorConfig {
   enableSystemPromptPruning?: boolean;
   executionMode?: ExecutionMode;
   timeoutMs?: number;
+  /** @deprecated Routing no longer truncates eligible candidates. */
   maxMemoryGuards?: number;
+  /** Maximum Jev-selected constraints appended to the user prompt. */
+  maxInjectedMemoryGuards?: number;
   cacheTtlDays?: number;
   logDecisions?: boolean;
   ignoreDirs?: string[];

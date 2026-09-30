@@ -22,7 +22,8 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   enableSystemPromptPruning: false,
   executionMode: 'auto',
   timeoutMs: 1500,
-  maxMemoryGuards: 80,
+  maxMemoryGuards: 80, // legacy configuration only; never a routing candidate cutoff
+  maxInjectedMemoryGuards: 3,
   cacheTtlDays: 7,
   logDecisions: true,
   ignoreDirs: [
@@ -41,7 +42,7 @@ const PROTECTED_PROJECT_KEYS = new Set<keyof JevNavigatorConfig>(['endpoint', 'a
 const CONFIG_KEYS = new Set<keyof JevNavigatorConfig>([
   'apiKey', 'keyFilePath', 'endpoint', 'model', 'enableTailInjection', 'enableSubsystems',
   'enableSkills', 'enableMemories', 'enableSystemPromptPruning', 'executionMode', 'timeoutMs',
-  'maxMemoryGuards', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
+  'maxMemoryGuards', 'maxInjectedMemoryGuards', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
   'projects',
 ]);
 type ConfigKey = keyof JevNavigatorConfig;
@@ -85,11 +86,14 @@ function validateLayer(value: unknown, label: string, diagnostics: string[]): La
             ? Array.isArray(rawValue) && rawValue.every((item) => typeof item === 'string')
             : typeof rawValue === 'number' && Number.isFinite(rawValue) &&
               (key === 'timeoutMs' ? Number.isSafeInteger(rawValue) && rawValue > 0
-                : key === 'maxMemoryGuards' ? Number.isSafeInteger(rawValue) && rawValue >= 0
+                : key === 'maxMemoryGuards' || key === 'maxInjectedMemoryGuards' ? Number.isSafeInteger(rawValue) && rawValue >= 0
                   : rawValue >= 0);
     if (!valid) {
       diagnostics.push(`⚠️ Ignoring invalid ${label} config value for ${key}.`);
       continue;
+    }
+    if (key === 'maxMemoryGuards') {
+      diagnostics.push('⚠️ maxMemoryGuards no longer limits routing candidates; use maxInjectedMemoryGuards for tail output and enableMemories to disable routing.');
     }
     result[key] = rawValue as never;
   }

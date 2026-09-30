@@ -70,7 +70,8 @@ export class JevPrompter {
     latencyMs: number,
     inputTokens: number,
     memories: MemoryGuard[] = [],
-    safetyRules: string[] = []
+    safetyRules: string[] = [],
+    maxInjectedMemoryGuards: number = 3
   ): DispatchDecision {
     const decision: DispatchDecision = { latencyMs, inputTokens, rawAnswers: answers, targetSubsystems: [], safetyRules: [] };
     const selectedKeys = (answer: JevChoiceAnswer, validKeys: string[], none: string, threshold: number): string[] => {
@@ -118,6 +119,9 @@ export class JevPrompter {
       const memoryMap = new Map(memories.map((memory) => [memory.id, memory]));
       const guards = selectedKeys(q5, [...memoryMap.keys()], 'none', 0.25)
         .filter((key) => key !== q5.choice || q5.confidence >= 0.35)
+        .sort((a, b) => a === q5.choice ? -1 : b === q5.choice ? 1
+          : (q5.probabilities?.[b] ?? 0) - (q5.probabilities?.[a] ?? 0))
+        .slice(0, maxInjectedMemoryGuards)
         .map((key) => memoryMap.get(key)!);
       if (guards.length) {
         decision.activatedMemoryGuards = guards;
