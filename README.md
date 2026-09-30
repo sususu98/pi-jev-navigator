@@ -31,7 +31,7 @@ agent_settled / session_shutdown
 
 Directory and skill candidates are sent in full: there is **no client-side keyword or semantic pre-filter**. Candidate IDs are collision-free within a request. Pi's canonical skill catalog supplies package/custom-path and resource-selection behavior; learned Hermes SOPs supplement it without overriding native names. Standalone library usage also supports recursive directories, symlinks, YAML frontmatter, explicit paths and literal skill paths from settings. Manual-only skills are not auto-selected.
 
-Memory entries use full-content hashes for exact deduplication. Metadata ranking organizes eligible global/current-project candidates without a routing cutoff; different rules sharing a title or prefix are not merged. The legacy `maxMemoryGuards` setting no longer truncates routing candidates. `maxInjectedMemoryGuards` (default 3) limits only the final Jev-selected tail constraints.
+Memory entries use full-content hashes for exact deduplication. Metadata ranking organizes eligible global/current-project candidates without a routing cutoff; different rules sharing a title or prefix are not merged. The legacy `maxMemoryGuards` setting no longer truncates routing candidates. `maxInjectedMemoryGuards` (default 3) limits only the final Jev-selected tail constraints. Memory source fingerprints (inode, size, nanosecond mtime/ctime and mode) are checked on every collection, so edits, appends, deletes and new files invalidate immediately; unchanged files reuse their parsed blocks. The five-minute TTL refreshes metadata ranking, not memory visibility.
 
 ### Auto routing and capacity
 

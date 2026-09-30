@@ -28,10 +28,20 @@ interface InternalMemoryEntry {
   score: number;
 }
 
+interface ParsedMemoryBlock {
+  category: MemoryGuard['category'];
+  cleanTitle: string;
+  summary: string;
+  rule: string;
+  project: string;
+  lastDate: string;
+}
+
 export class MemoryCollector {
   private readonly homeDir: string;
-  private memoryCache: { project: string; timestamp: number; guards: MemoryGuard[] } | null = null;
-  private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache
+  private memoryCache: { project: string; signature: string; timestamp: number; guards: MemoryGuard[] } | null = null;
+  private fileCache = new Map<string, { signature: string; blocks: ParsedMemoryBlock[] }>();
+  private readonly CACHE_TTL_MS = 5 * 60 * 1000; // recency re-ranking only; file changes invalidate immediately
 
   constructor(homeDir: string = os.homedir()) {
     this.homeDir = homeDir;
@@ -52,14 +62,7 @@ export class MemoryCollector {
   private parseBlockWithMeta(
     block: string,
     defaultCategory: MemoryGuard['category'] = 'memory'
-  ): {
-    category: MemoryGuard['category'];
-    cleanTitle: string;
-    summary: string;
-    rule: string;
-    project: string;
-    lastDate: string;
-  } | null {
+  ): ParsedMemoryBlock | null {
     const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
     if (lines.length === 0) return null;
 
@@ -110,6 +113,30 @@ export class MemoryCollector {
     };
   }
 
+  private fileSignature(file: string): string {
+    try {
+      const stat = fs.statSync(file, { bigint: true });
+      return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs, stat.mode].join(':');
+    } catch { return 'missing'; }
+  }
+
+  private readBlocks(file: string, category: MemoryGuard['category'], signature: string): ParsedMemoryBlock[] {
+    if (signature === 'missing') { this.fileCache.delete(file); return []; }
+    const cached = this.fileCache.get(file);
+    if (cached?.signature === signature) return cached.blocks;
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      const blocks = raw.split(/\n§\s*\n?|\n§$/m)
+        .map((block) => this.parseBlockWithMeta(block.trim(), category))
+        .filter((block): block is ParsedMemoryBlock => block !== null);
+      this.fileCache.set(file, { signature, blocks });
+      return blocks;
+    } catch {
+      this.fileCache.delete(file);
+      return [];
+    }
+  }
+
   /**
    * Collect active memory constraints across Hermes memory store and project memory
    * Pure metadata-driven ranking (Recency + Category Hierarchy + Project Scope) with ZERO client-side keyword heuristics.
@@ -118,15 +145,6 @@ export class MemoryCollector {
     const gitCtx = resolveGitContext(projectRoot);
     const targetProject = gitCtx.projectName || 'default';
 
-    // Check memory cache
-    if (
-      this.memoryCache &&
-      this.memoryCache.project === targetProject &&
-      Date.now() - this.memoryCache.timestamp < this.CACHE_TTL_MS
-    ) {
-      return this.memoryCache.guards.slice(0, maxTotal);
-    }
-
     const memoryFiles = [
       { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'failures.md'), defaultCategory: 'correction' as const },
       { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'USER.md'), defaultCategory: 'preference' as const },
@@ -134,17 +152,17 @@ export class MemoryCollector {
       { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'MEMORY.md'), defaultCategory: 'convention' as const },
     ];
 
+    const signatures = memoryFiles.map((item) => this.fileSignature(item.path));
+    const signature = JSON.stringify(signatures);
+    if (this.memoryCache?.project === targetProject && this.memoryCache.signature === signature &&
+      Date.now() - this.memoryCache.timestamp < this.CACHE_TTL_MS) {
+      return this.memoryCache.guards.slice(0, maxTotal);
+    }
     const entriesMap = new Map<string, InternalMemoryEntry>();
 
-    for (const item of memoryFiles) {
-      if (!fs.existsSync(item.path)) continue;
+    for (const [index, item] of memoryFiles.entries()) {
       try {
-        const raw = fs.readFileSync(item.path, 'utf-8');
-        const rawBlocks = raw.split(/\n§\s*\n?|\n§$/m).map((b) => b.trim()).filter(Boolean);
-
-        for (const block of rawBlocks) {
-          const parsed = this.parseBlockWithMeta(block, item.defaultCategory);
-          if (!parsed) continue;
+        for (const parsed of this.readBlocks(item.path, item.defaultCategory, signatures[index])) {
 
           // Project boundary filter: only keep target project and global memories
           if (parsed.project !== 'global' && parsed.project !== targetProject) {
@@ -239,6 +257,7 @@ export class MemoryCollector {
 
     this.memoryCache = {
       project: targetProject,
+      signature,
       timestamp: Date.now(),
       guards: sortedGuards,
     };

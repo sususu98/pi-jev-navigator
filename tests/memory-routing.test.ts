@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -21,6 +21,54 @@ afterEach(() => fs.rmSync(temporary, { recursive: true, force: true }));
 const file = () => path.join(home, '.pi/agent/pi-hermes-memory/failures.md');
 const block = (title: string, project = 'global') =>
   `[correction] ${title}\nEnforce ${title}\n<!-- project64=${Buffer.from(project).toString('base64')} last=2026-09-30 -->`;
+
+describe('memory file freshness', () => {
+  it('observes appended, edited, deleted and newly created rules without waiting for TTL', () => {
+    const collector = new MemoryCollector(home);
+    expect(collector.collectMemories(root)).toEqual([]);
+    put(file(), block('before'));
+    expect(collector.collectMemories(root).map((guard) => guard.title)).toEqual(['before']);
+    fs.appendFileSync(file(), '\n§\n' + block('appended'));
+    expect(collector.collectMemories(root).map((guard) => guard.title).sort()).toEqual(['appended', 'before']);
+    put(file(), block('edited'));
+    expect(collector.collectMemories(root).map((guard) => guard.title)).toEqual(['edited']);
+    fs.unlinkSync(file());
+    expect(collector.collectMemories(root)).toEqual([]);
+    put(path.join(home, '.pi/agent/pi-hermes-memory/USER.md'), block('new-preference'));
+    expect(collector.collectMemories(root).map((guard) => guard.title)).toEqual(['new-preference']);
+  });
+
+  it('detects equal-size edits even with restored mtime, and atomic inode replacements', () => {
+    put(file(), block('before'));
+    const collector = new MemoryCollector(home);
+    expect(collector.collectMemories(root)[0].title).toBe('before');
+    const stat = fs.statSync(file());
+    // Same byte count and old mtime do not hide the changed ctime.
+    put(file(), block('edited'));
+    fs.utimesSync(file(), stat.atime, stat.mtime);
+    expect(collector.collectMemories(root)[0].title).toBe('edited');
+    const temporaryFile = file() + '.replacement';
+    put(temporaryFile, block('atomic'));
+    fs.utimesSync(temporaryFile, stat.atime, stat.mtime);
+    fs.renameSync(temporaryFile, file());
+    expect(collector.collectMemories(root)[0].title).toBe('atomic');
+  });
+
+  it('reuses parsed blocks from unchanged files when only one source changes', () => {
+    const user = path.join(home, '.pi/agent/pi-hermes-memory/USER.md');
+    put(file(), block('first')); put(user, block('preference'));
+    const read = spyOn(fs, 'readFileSync');
+    try {
+      const collector = new MemoryCollector(home);
+      collector.collectMemories(root); collector.collectMemories(root);
+      const count = (target: string) => read.mock.calls.filter((args) => args[0] === target).length;
+      expect(count(file())).toBe(1); expect(count(user)).toBe(1);
+      fs.appendFileSync(file(), '\n§\n' + block('new-correction'));
+      expect(collector.collectMemories(root).some((guard) => guard.title === 'new-correction')).toBe(true);
+      expect(count(file())).toBe(2); expect(count(user)).toBe(1);
+    } finally { read.mockRestore(); }
+  });
+});
 
 describe('task-relevant memory routing', () => {
   it('lets Jev see and select an old relevant rule beyond the legacy cutoff', async () => {
