@@ -30,12 +30,12 @@ node scripts/check-package.mjs
 
 ## 🏛️ Core Architecture & Inviolable Invariants
 
-### 1. Prefix Cache Invariant (System Prompt Purity — 绝对不能动的禁区)
-* **System Prompt 是绝对不能触碰的禁区！永远都不能动态改动 System Prompt**：会话一旦启动，Leading System Prompt 必须保持 **100% 字节级绝对静态**。严禁在任何生命周期钩子（`before_agent_start`、`context_with_system` 等）中动态重写、正则剪枝或按轮次动态增删系统提示词。
-* **严禁动态向 System Prompt 注入或筛选技能**：严禁在 `before_agent_start` 中根据 Jev 激活的技能动态修改 `event.systemPromptOptions.skills`（例如“有技能时塞入 1 个 skill，无技能时置空”）。这种轮次间的系统词跳变会直接斩断大模型上游 LCP（Longest Common Prefix）Merkle 树根，彻底击穿数十万 Token 的 Prefix Cache，并摧毁多账号反代网关的会话亲和性导致频繁强制换号。
-* **全生命周期系统词纯净一致**：在启用技能剪枝时，系统提示词中的技能列表必须在整个会话中**永久恒定**（例如始终为 `[]` 或固定的统一静态注释），确保第 1 轮到第 100 轮的 System Prompt 每一个字符绝对不变。
-* **所有动态指引 100% 仅能走尾部注入（Tail Injection）**：动态导航数据包（Target Subsystem, Recommended SOP Skill, Active Memory Guard, Risk Score）必须**严格且仅能追加在 User Prompt 尾部 (`TailInjector`)**。大模型通过阅读 User 尾部推荐的 SOP 路径，利用标准 `read` 工具将其作为会话上下文动态载入，严禁动首部系统提示词。
-* **Historical wire prefix invariant**：发送给大模型的请求级历史尾部必须在后续所有请求中字节级保持原样。使用 `NavigationTailLedger` 将生成的尾部一次性冻结在非上下文的 Session Custom Entry (`jev-navigation-tail-v1`) 中，并在后续轮次通过 `context_with_system` 原样比特级回放。严禁在 `settle`、新轮次、绕过或恢复时剥离旧尾部，严禁重新计算历史遥测数字。跨轮次 Skill/SOP/工具历史前缀完全一致是强制性的回归测试防线。
+### 1. Prefix Cache Invariant (System Prompt Purity — Inviolable Forbidden Zone)
+* **System Prompt is an inviolable forbidden zone — NEVER mutate or modify it dynamically**: Once a session starts, the Leading System Prompt must remain **100% bit-for-bit identical across all turns**. It is strictly forbidden to rewrite, regex-prune, filter, or dynamically add/remove system prompt content in any lifecycle hook (`before_agent_start`, `context_with_system`, etc.).
+* **Strictly forbidden to dynamically inject or filter skills in System Prompt**: Never dynamically alter `event.systemPromptOptions.skills` based on Jev's activated skills in `before_agent_start` (e.g., injecting an active skill when present and emptying it when absent). Turn-by-turn variance in the leading system instruction breaks the upstream LLM LCP (Longest Common Prefix) Merkle root, destroys hundred-thousand-token Prefix Caches, and breaks session affinity across multi-account gateways.
+* **Turn-invariant system prompt purity**: When skill pruning is enabled, the system prompt's skill section must remain **permanently constant** throughout the entire session (e.g., always `[]` or a fixed static placeholder comment), ensuring that the System Prompt is byte-for-byte identical from turn 1 to turn 100+.
+* **All dynamic guidance MUST strictly use Tail Injection**: Dynamic navigation packets (Target Subsystem, Recommended SOP Skill, Active Memory Guard, Risk Score) must **strictly and exclusively be appended to the user prompt's trailing context (`TailInjector`)**. The model loads recommended SOP skills on demand via standard `read` tool calls into the conversation flow, never by mutating leading system prompts.
+* **Historical wire prefix invariant**: request-local tails must remain present, byte-for-byte, on their original user messages in every subsequent request. Freeze the complete tail once in non-context session custom entries (`jev-navigation-tail-v1`) via `pi.appendEntry()`; replay them bit-for-bit on the active branch during `context_with_system`. Never strip or recalculate old tails on settle, new prompts, bypass/disable, reload or resume. Cross-run Skill/SOP/tool-history prefix equality is a mandatory regression test.
 
 ### 2. Jev Relevance Evaluation, Skill Metadata & Memory Scope
 * **Strictly forbidden**: Never hardcode client-side keyword regexes, manual topic cluster heuristics (e.g. `if (title.includes('grep'))`), or heuristic skill/directory slicing to guess task relevance. Jev performs relevance evaluation.
