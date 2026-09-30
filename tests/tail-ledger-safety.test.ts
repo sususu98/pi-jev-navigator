@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import register from '../src/index.ts';
-import { NavigationTailLedger, NAVIGATION_TAIL_ENTRY } from '../src/injector/tail-ledger.ts';
+import { NavigationTailLedger, NAVIGATION_TAIL_ENTRY, MAX_NAVIGATION_TAIL_CHARS } from '../src/injector/tail-ledger.ts';
 
 let temp: string;
 beforeEach(() => { temp = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-tail-native-')); });
@@ -16,7 +16,10 @@ function runtime(manager: SessionManager, evaluate = async (_p: string): Promise
   const api = {
     on(name: string, fn: any) { events.set(name, [...(events.get(name) ?? []), fn]); },
     registerCommand() {}, registerFlag() {},
-    appendEntry(type: string, data: unknown) { appends.push(data); manager.appendCustomEntry(type, data); },
+    appendEntry(type: string, data: unknown) {
+      if (type === NAVIGATION_TAIL_ENTRY) appends.push(data);
+      manager.appendCustomEntry(type, data);
+    },
   };
   const nav = { hasApiKey: () => true, getConfig: () => ({ enableTailInjection: true }),
     getConfigStore: () => ({ getDiagnostics: () => [] }), evaluatePrompt: evaluate };
@@ -166,6 +169,71 @@ const rawMessages = (manager: SessionManager): any[] => manager.getBranch()
     expect(manager.getBranch().filter(e => e.type === 'custom')).toHaveLength(0);
   });
 
+  it('applies the same guidance limit before publication and replay, including empty freezing and fallback hosts', () => {
+    for (const length of [MAX_NAVIGATION_TAIL_CHARS, MAX_NAVIGATION_TAIL_CHARS + 1]) {
+      const manager = SessionManager.inMemory(temp);
+      const user: any = { role: 'user', content: 'Large catalog task', timestamp: 2 };
+      manager.appendMessage(user);
+      const ledger = new NavigationTailLedger({ appendEntry(type: string, data: unknown) {
+        manager.appendCustomEntry(type, data);
+      } } as any);
+      const ctx: any = { sessionManager: manager };
+      const guidance = 'X'.repeat(length);
+      const expected = length <= MAX_NAVIGATION_TAIL_CHARS ? user.content + guidance : user.content;
+      const first = ledger.replay([user], ctx, 'session', { index: 0, guidance });
+      expect(first[0].content).toBe(expected);
+      const fresh = new NavigationTailLedger({} as any);
+      expect(fresh.replay([user], ctx, 'reloaded')[0].content).toBe(expected);
+      if (length > MAX_NAVIGATION_TAIL_CHARS) {
+        expect(ledger.replay([user], ctx, 'session', { index: 0, guidance: 'LATER' })[0].content).toBe(user.content);
+        const fallback = new NavigationTailLedger({} as any);
+        const bare: any = { sessionManager: {} };
+        expect(fallback.replay([user], bare, 'fallback', { index: 0, guidance })[0].content).toBe(user.content);
+        expect(fallback.replay([user], bare, 'fallback', { index: 0, guidance: 'LATER' })[0].content).toBe(user.content);
+      }
+    }
+  });
+
+  it('freezes absence when native append updates the tree before a disk failure, including later flush/resume', () => {
+    const manager = SessionManager.create(temp, path.join(temp, 'sessions'));
+    const user: any = { role: 'user', content: 'Never backfill this request', timestamp: 2 };
+    manager.appendMessage(user);
+    const ledger = new NavigationTailLedger({ appendEntry(type: string, data: unknown) {
+      manager.appendCustomEntry(type, data);
+    } } as any);
+    const persist = (manager as any)._persist;
+    (manager as any)._persist = () => { throw new Error('disk full after tree append'); };
+    const ctx: any = { sessionManager: manager };
+    expect(ledger.replay([user], ctx, 'session', { index: 0, guidance: 'UNSENT-TAIL' })).toEqual([user]);
+    expect(ledger.replay([user], ctx, 'session', { index: 0, guidance: 'UNSENT-TAIL' })).toEqual([user]);
+    (manager as any)._persist = persist;
+    // A delayed first full-tree flush must persist the empty, not the rejected tail.
+    manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Done' }], timestamp: 3 } as any);
+    const reopened = SessionManager.open(manager.getSessionFile()!, path.join(temp, 'sessions'));
+    const freshLedger = new NavigationTailLedger({} as any);
+    expect(freshLedger.replay([user], { sessionManager: reopened } as any, 'new')).toEqual([user]);
+    const record = reopened.getEntries().find(e => e.type === 'custom' && e.customType === NAVIGATION_TAIL_ENTRY);
+    expect((record as any).data.guidance).toBe('');
+  });
+
+  it('binds initial provenance when first-request steering has identical content and timestamp', async () => {
+    const manager = SessionManager.inMemory(temp);
+    const h = runtime(manager);
+    const first: any = { role: 'user', content: 'Identical task', timestamp: 2 };
+    await h.emit('before_agent_start', { prompt: first.content });
+    // Actual host event order: finalized notification first, persistence second.
+    await h.emit('message_end', { message: first });
+    const initialId = manager.appendMessage(first);
+    const steering = structuredClone(first);
+    await h.emit('message_end', { message: steering });
+    manager.appendMessage(steering);
+    const result = await h.emit('context_with_system', { messages: rawMessages(manager) });
+    expect(result.messages[0].content).toContain('fixture-sop');
+    expect(result.messages[1]).toEqual(steering);
+    const record = manager.getBranch().find(e => e.type === 'custom' && e.customType === NAVIGATION_TAIL_ENTRY);
+    expect((record as any).data.userEntryId).toBe(initialId);
+  });
+
   it('binds the initial user before a steering message arrives ahead of first request', async () => {
     const manager = SessionManager.inMemory(temp);
     const first: any = { role: 'user', content: 'Initial task', timestamp: 2 };
@@ -178,6 +246,10 @@ const rawMessages = (manager: SessionManager): any[] => manager.getBranch()
     await h.emit('message_end', { message: steering });
     const result = await h.emit('context_with_system', { messages: rawMessages(manager) });
     expect(result.messages[1]).toEqual(steering);
-    expect(JSON.stringify(result.messages)).not.toContain('fixture-sop');
+    expect(result.messages[0].content).toContain('fixture-sop');
+    expect(result.messages[1].content).not.toContain('fixture-sop');
+    await h.emit('agent_settled');
+    const replay = await h.emit('context_with_system', { messages: rawMessages(manager) });
+    expect(replay.messages).toEqual(result.messages);
   });
 });

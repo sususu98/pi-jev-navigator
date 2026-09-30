@@ -5,13 +5,13 @@ Context routing for Pi Coding Agent using TypeSafe Jev: code directories, SOP sk
 ## Behavior and safety boundaries
 
 - **Request-local navigation:** selected subsystems, full skill paths and memory rules are appended to the latest user message sent to the model. Original persisted messages are never rewritten. Frozen navigation tails are saved as non-context custom session entries and replayed on their original user messages.
-- **System prompt purity:** the Leading System Prompt remains 100% bit-for-bit static across the entire session to preserve upstream prefix cache. When Jev skill routing is active (`enableSkills: true`), Pi's 56KB+ native skill catalog is permanently omitted from the system prompt, keeping it lean, static, and turn-invariant.
+- **Fixed native skill policy:** the first prompt freezes the session's catalog policy in a non-context `jev-skill-policy-v1` entry. Sessions started with skill routing enabled omit the native catalog before routing, even on missing credentials, bypass, timeout or cancellation. Routing outcomes and later config/flag changes cannot flip this policy. Reload restores it; changing the policy requires a new session.
 - **Whole-run lifetime:** guidance survives tool batches, retries and recovery until Pi's `agent_settled` event. Sessions are isolated and superseded decisions are discarded.
-- **Fail-open:** missing credentials, cancellation, invalid responses and request failures leave native context unchanged. A failed decision is not interpreted as “select no skills”.
-- **Independent controls:** disabling skills keeps native skills and disables Jev skill selection. Disabling tail injection disables automatic routing; `/jev-eval` remains an explicit diagnostic command.
+- **Fail-open:** missing credentials, cancellation, invalid responses and request failures add no new navigation; historical tails and the fixed catalog policy remain intact. A failed decision is not interpreted as “select no skills”.
+- **Independent controls:** starting a session with skills disabled retains native skills and disables Jev skill selection. Mid-session switches change routing, not the frozen catalog policy. Disabling tail injection disables automatic routing; `/jev-eval` remains an explicit diagnostic command.
 - **Credential boundary:** only trusted global configuration, environment variables, or explicit library-constructor options can configure credentials and endpoints. Project `endpoint`, `apiKey` and `keyFilePath` are ignored with diagnostics. HTTP redirects are rejected.
 
-The extension maximizes upstream prefix-cache hits by preserving a strictly static system prompt and bit-for-bit replaying historical navigation tails. External factors such as other mutating extensions, model changes, and upstream server-side eviction may still affect cache independently.
+The extension protects Jev-owned historical prefixes by keeping its catalog policy fixed and replaying frozen navigation tails. This does not guarantee upstream cache hits: other extensions, host/provider serialization changes, compaction, model/account changes and server-side eviction can independently affect cache.
 
 ## Pipeline
 
@@ -20,7 +20,7 @@ before_agent_start
   → collect graph/skill metadata; retrieve bounded scoped memories from Hermes SQLite
   → estimate serialized payload tokens
   → unified request OR parallel Track A (overview) + Track B (skills/memory)
-  → capacity batches and Jev shortlist arbitration when an individual track is too large
+  → capacity batches preserving independent candidate verdicts when a track is too large
   → validate every answer against its request criteria
 context_with_system (every model request)
   → keep system prompt and native skill catalog unchanged
@@ -36,21 +36,21 @@ Memory routing uses a **read-only Hermes SQLite/FTS5 adapter**, not a full Markd
 
 Bounded lexical queries use task identifiers and mechanical Chinese trigram segmentation, without topic dictionaries or hardcoded synonyms. Identifier conjunctions, contextual clauses and Chinese fragments produce candidate lists; per-view leaders and reciprocal-rank fusion preserve lexical diversity. Correction/preference, failure-store and general-memory channels are interleaved across both scopes. This is **candidate recall, not semantic relevance evaluation**: only Jev may select final tail constraints. Lexical wording gaps and budget omissions remain possible; this does not guarantee exhaustive recall.
 
-`memoryCandidateLimit` defaults to **64** and `memoryCandidateTokens` to **8K estimated tokens** for the complete serialized memory-choice question. Whole records that do not fit are omitted, never clipped; candidate limits are separate from `maxInjectedMemoryGuards` (default **3**). Stable SQLite IDs deduplicate results without merging similar rules, and every retrieval sees a fresh read transaction. A missing, incompatible, corrupt, empty or locked database returns no memory candidates, **never a whole-Markdown fallback**; graph/skill routing may still proceed. The old Markdown collector remains only for standalone compatibility. No database writes, synchronization, consolidation or pinned-instruction re-injection occurs.
+`memoryCandidateLimit` defaults to **64** and `memoryCandidateTokens` to **8K estimated tokens** for the complete serialized independent Noul memory questions. Whole records that do not fit are omitted, never clipped; candidate limits are separate from `maxInjectedMemoryGuards` (default **3**). Stable SQLite IDs deduplicate results without merging similar rules, and every retrieval sees a fresh read transaction. A missing, incompatible, corrupt, empty or locked database returns no memory candidates, **never a whole-Markdown fallback**; graph/skill routing may still proceed. The old Markdown collector remains only for standalone compatibility. No database writes, synchronization, consolidation or pinned-instruction re-injection occurs.
 
 Cards/status/telemetry distinguish eligible store size, unique retrieved results, candidates submitted, selected guards, retrieval latency, budget omissions and estimated memory tokens. An eligible corpus of 1,800 records does not mean 1,800 records were sent.
 
 ### Cross-turn prompt-cache invariant
 
-Request-local injection must also preserve **the entire historical wire prefix**, not just the system prompt. A user message that was sent with a navigation tail must retain that exact tail on every subsequent request. Navigator freezes the complete string once (including Skill paths, Memory rules, latency and token statistics) in a `jev-navigation-tail-v1` custom entry through `pi.appendEntry()`. These entries are not model messages; the raw user transcript stays untouched. Replay follows `getBranch()` and native message provenance, with entry IDs, timestamps and canonical content fingerprints. It never re-evaluates or reformats old packets.
+Request-local injection must also preserve **the entire historical wire prefix**, not just the system prompt. A user message that was sent with a navigation tail must retain that exact tail on every subsequent request. Navigator freezes the complete guidance string once (including Skill paths and complete Memory rules; telemetry is human-only) in a `jev-navigation-tail-v1` custom entry through `pi.appendEntry()`. These entries are not model messages; the raw user transcript stays untouched. Replay follows `getBranch()` and native message provenance, with entry IDs, timestamps and canonical content fingerprints. It never re-evaluates or reformats old packets. The initial user keeps its own tail even when steering arrives before the first request; steering never inherits that decision. Metadata publication failures freeze an empty tail, including when the host updates its in-memory tree before a disk write throws. If skill-policy metadata was not saved, reload recovers its omission state from existing structured system history where available. Older unstructured histories cannot prove that state; start a fresh session for a clean invariant.
 
-New routing failures, disabled routing, steering and idle/cancelled contexts do not remove earlier tails. Reload/resume restores them from the session tree; compaction replays only messages still present. Empty decisions are frozen too, and failed metadata persistence cannot publish a transient new tail. A host that completely unloads the extension cannot replay its metadata. Old sessions created before this fix have no frozen packets: their exact missing tails cannot be invented, so the first request after upgrading may rebuild cache. Other extensions, model changes and upstream cache eviction can still invalidate cache independently.
+New routing failures, disabled routing, steering and idle/cancelled contexts do not remove earlier tails. Reload/resume restores them from the session tree; compaction replays only messages still present. Empty decisions are frozen too, and failed metadata persistence cannot publish a transient new tail. The same 256Ki-character guidance limit applies before publication and during replay: an oversized combined tail freezes absence rather than clipping constraints or emitting an unreplayable packet. A host that completely unloads the extension cannot replay its metadata. Old sessions created before this fix have no frozen packets: their exact missing tails cannot be invented, so the first request after upgrading may rebuild cache. Other extensions, model changes and upstream cache eviction can still invalidate cache independently.
 
 ### Auto routing and capacity
 
 `auto` measures the complete serialized request's UTF-8 bytes, using **2.85 bytes/token**, and splits above **28,000 estimated tokens** when both logical tracks have inputs. **Track A contains repository overview only; Track B contains Skill metadata, retrieved scoped Memory candidates and safety constraints.** Both receive the current task. A 255-choice capacity overflow can also require batching below the byte threshold. Disabled/empty tracks do not cause an empty second stream.
 
-Every outgoing request is checked against the estimated **32K per-request** and **255 options per choice question** limits. These remain calibrated estimates, not exact tokenizer guarantees. Oversized overview/skill tracks are mechanically partitioned without candidate truncation; Memory is already bounded by local retrieval before this capacity check. Track B winners are re-evaluated by Jev together (with bounded recursive arbitration if necessary); batch-local confidence is not treated as a globally comparable rank. Overview batches preserve every symbol record and merge evaluated directory coverage. An unsplittable task/record, non-converging shortlist, forced oversized `unified` request, error or timeout fails open.
+Every outgoing request is checked against the estimated **32K per-request** and **255 options per choice question** limits. These remain calibrated estimates, not exact tokenizer guarantees. Oversized overview/skill tracks are mechanically partitioned without candidate truncation; Memory is already bounded by local retrieval before this capacity check. Track B evaluates each Skill/Memory candidate with an independent Noul and merges every signal; no batch Top-1 shortlist or cross-batch Choice-confidence ranking is used. Overview batches preserve every symbol record and merge evaluated directory coverage. An unsplittable task/record, forced oversized `unified` request, error or timeout fails open.
 
 Cards, status and `/jev-eval` display **Unified versus Parallel** and per-track actual API input usage. Batched usage is explicitly labeled as an aggregate across requests. Telemetry stores estimated payload/track tokens separately from actual usage; two tracks never share a single 64K window.
 
@@ -130,7 +130,10 @@ Project-local secret-file auto-discovery is intentionally disabled. `/jev-config
   "timeoutMs": 1500,
   "memoryCandidateLimit": 64, // bounded local recall, hard ceiling 254
   "memoryCandidateTokens": 8000, // estimated serialized memory-question budget (8K)
+  "maxInjectedSkills": 3, // independently applicable SOP tail output limit
   "maxInjectedMemoryGuards": 3, // Jev-selected tail output limit
+  "skillApplicabilityThreshold": 0.75, // provisional Noul gate; calibrate on your tasks
+  "memoryApplicabilityThreshold": 0.75, // same range: greater than 0.5, at most 1
   "cacheTtlDays": 7,
   "logDecisions": true,
 }
@@ -174,3 +177,30 @@ Tests use isolated filesystem fixtures and offline transports. They cover lifecy
 ## License
 
 MIT © sususu
+
+### Independent Skill / Memory applicability
+
+Each skill metadata record and each bounded, whole memory record gets its own `Noul`
+against the current task. Structured question instructions carry candidate data separately
+from the question, with explicit field references and symmetric true/false criteria.
+Multiple candidates or none may apply. Noul answers contain `type` and `noul`, not a
+`confidence` field; Choice and Score still require confidence. Capacity batches preserve
+every question and merge all signals without batch Top-1 elimination.
+
+`skillApplicabilityThreshold` and `memoryApplicabilityThreshold` default to **0.75**.
+They accept finite values in **(0.5, 1]**; equality with the configured threshold passes.
+Lower or uncertain signals are not injected. These are provisional conservative defaults,
+not measured accuracy guarantees: calibrate thresholds on relevant and irrelevant tasks.
+After filtering, output caps prefer higher Noul applicability signals; exact ties use
+stable candidate identities rather than catalog order. This is not a proof of an optimal,
+mutually complementary or conflict-free guidance set. Raw answers retain the signals for
+validation, and historical tails are never re-ranked after publication.
+
+`maxInjectedSkills` defaults to **3**; like `maxInjectedMemoryGuards`, it accepts a
+non-negative safe integer, including **0** to suppress output without disabling evaluation.
+For example, a documentation task may independently select `documentation-style` and
+`link-checking`, each with its complete SOP path in the tail. Only metadata is sent for
+skills; the agent reads selected SOP bodies on demand. Memory evaluation and tails retain
+complete guidance. Every request is estimated separately against **32K**, and all batches
+share the **1500ms** deadline and global worker limit. More questions increase payload and
+may require more batches; estimates are not a service-tokenizer guarantee.

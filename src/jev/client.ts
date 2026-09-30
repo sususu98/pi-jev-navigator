@@ -29,7 +29,8 @@ export function validateJevResponse(
   }
   for (const [id, question] of Object.entries(questions)) {
     const answer = value.answers[id];
-    if (!isRecord(answer) || answer.type !== question.type || !isProbability(answer.confidence)) {
+    if (!isRecord(answer) || answer.type !== question.type
+      || (question.type !== 'noul' && !isProbability(answer.confidence))) {
       throw new Error(`Missing or invalid Jev answer: ${id}`);
     }
     if (question.type === 'choice') {

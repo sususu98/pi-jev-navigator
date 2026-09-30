@@ -70,10 +70,10 @@ describe('read-only Hermes retrieval', () => {
   it('bounds actual serialized memory question and candidate counts without clipping rules', () => {
     makeHermesDatabase(home, Array.from({ length: 100 }, (_, i) => ({ content: `WebSocket constraint ${i}: ${'Whole rule '.repeat(100)}`, project: i % 2 ? 'CPA' : null })));
     const r = new HermesMemoryRetriever(home).retrieve('WebSocket', root, { maxCandidates: 8, maxTokens: 1500 });
-    const q = new JevPrompter().buildQuestions('', [], [], r.memories).questions.q5_memory_guard;
+    const questions = Object.fromEntries(Object.entries(new JevPrompter().buildQuestions('', [], [], r.memories).questions).filter(([id]) => id.startsWith('q5_memory_')));
     expect(r.memories.length).toBeGreaterThan(0);
     expect(r.memories.length).toBeLessThanOrEqual(8);
-    expect(Math.ceil(Buffer.byteLength(JSON.stringify({ q5_memory_guard: q })) / 2.85)).toBeLessThanOrEqual(1500);
+    expect(Math.ceil(Buffer.byteLength(JSON.stringify(questions)) / 2.85)).toBeLessThanOrEqual(1500);
     expect(r.stats.budgetLimited).toBe(true);
     expect(new Set(r.memories.map(m => m.project)).size).toBe(2);
     expect(r.memories.every(m => m.rule.endsWith('Whole rule '))).toBe(true);
@@ -140,10 +140,10 @@ describe('read-only Hermes retrieval', () => {
       requests++;
       const req = JSON.parse(String(init?.body));
       expect(JSON.stringify(req)).not.toContain('Irrelevant note');
-      const ids = Object.keys(req.questions.q5_memory_guard.criteria).filter(id => id !== 'none');
+      const ids = Object.keys(req.questions).filter(id => id.startsWith('q5_memory_'));
       expect(ids).toHaveLength(1);
       const response = responseFor(req);
-      response.answers.q5_memory_guard = { type: 'choice', choice: ids[0], confidence: 1, probabilities: { [ids[0]]: 1 } };
+      response.answers[ids[0]] = { type: 'noul', noul: 0.95 };
       return Response.json(response);
     }) as typeof fetch;
     const nav = new JevNavigator(root, { apiKey: 'FAKE', enableSkills: false, enableSubsystems: false, logDecisions: false }, home, transport);

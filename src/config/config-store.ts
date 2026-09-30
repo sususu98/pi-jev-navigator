@@ -25,6 +25,9 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   timeoutMs: 1500,
   maxMemoryGuards: 80, // legacy configuration only; never a routing candidate cutoff
   maxInjectedMemoryGuards: 3,
+  maxInjectedSkills: 3,
+  skillApplicabilityThreshold: 0.75,
+  memoryApplicabilityThreshold: 0.75,
   memoryCandidateLimit: 64,
   memoryCandidateTokens: 8000,
   cacheTtlDays: 7,
@@ -45,7 +48,7 @@ const PROTECTED_PROJECT_KEYS = new Set<keyof JevNavigatorConfig>(['endpoint', 'a
 const CONFIG_KEYS = new Set<keyof JevNavigatorConfig>([
   'apiKey', 'keyFilePath', 'endpoint', 'model', 'enableTailInjection', 'enableSubsystems',
   'enableSkills', 'enableMemories', 'executionMode', 'timeoutMs',
-  'maxMemoryGuards', 'maxInjectedMemoryGuards', 'memoryCandidateLimit', 'memoryCandidateTokens', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
+  'maxMemoryGuards', 'maxInjectedMemoryGuards', 'maxInjectedSkills', 'skillApplicabilityThreshold', 'memoryApplicabilityThreshold', 'memoryCandidateLimit', 'memoryCandidateTokens', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
   'projects',
 ]);
 type ConfigKey = keyof JevNavigatorConfig;
@@ -88,8 +91,10 @@ function validateLayer(value: unknown, label: string, diagnostics: string[]): La
           : key === 'ignoreDirs'
             ? Array.isArray(rawValue) && rawValue.every((item) => typeof item === 'string')
             : typeof rawValue === 'number' && Number.isFinite(rawValue) &&
-              (key === 'timeoutMs' ? Number.isSafeInteger(rawValue) && rawValue > 0
-                : ['maxMemoryGuards', 'maxInjectedMemoryGuards', 'memoryCandidateLimit', 'memoryCandidateTokens'].includes(key) ? Number.isSafeInteger(rawValue) && rawValue >= 0
+              (key === 'skillApplicabilityThreshold' || key === 'memoryApplicabilityThreshold'
+                ? rawValue > 0.5 && rawValue <= 1
+                : key === 'timeoutMs' ? Number.isSafeInteger(rawValue) && rawValue > 0
+                : ['maxMemoryGuards', 'maxInjectedMemoryGuards', 'maxInjectedSkills', 'memoryCandidateLimit', 'memoryCandidateTokens'].includes(key) ? Number.isSafeInteger(rawValue) && rawValue >= 0
                   : rawValue >= 0);
     if (!valid) {
       diagnostics.push(`⚠️ Ignoring invalid ${label} config value for ${key}.`);

@@ -15,10 +15,12 @@ export class TailInjector {
       lines.push(`• Target Subsystem: \`${decision.targetSubsystems.join(', ')}\``);
     }
 
-    if (decision.activatedSkill) {
-      lines.push(`• Recommended SOP Skill: \`${decision.activatedSkill}\``);
-      if (decision.activatedSkillPath) {
-        lines.push(`  Read the complete SKILL.md before following this SOP: ${JSON.stringify(decision.activatedSkillPath)}`);
+    const skills = decision.activatedSkills ?? (decision.activatedSkill
+      ? [{ name: decision.activatedSkill, path: decision.activatedSkillPath }] : []);
+    for (const skill of skills) {
+      lines.push(`• Recommended SOP Skill: \`${skill.name}\``);
+      if (skill.path) {
+        lines.push(`  Read the complete SKILL.md before following this SOP: ${JSON.stringify(skill.path)}`);
       }
     }
 
@@ -30,7 +32,7 @@ export class TailInjector {
     if (activeGuards.length > 0) {
       lines.push(`• Active Memory Guard:`);
       for (const g of activeGuards) {
-        lines.push(`  [${g.category}] ${g.summary}`);
+        lines.push(`  [${g.category}] ${g.summary}${g.summary.includes(g.rule) ? '' : '\n  ' + g.rule}`);
       }
     }
 
@@ -43,26 +45,10 @@ export class TailInjector {
     return lines.join('\n');
   }
 
-  /**
-   * System Prompt Purity Invariant:
-   * Keep system prompt 100% bit-for-bit static. Never dynamically inject individual
-   * skills into the system prompt. Activated skills are routed strictly via prompt tails.
+  /** @deprecated Rendered system instructions must never be pruned. Kept as a
+   * no-op for API compatibility; native catalog policy is fixed by the runtime.
    */
   public pruneSystemPromptSkills(systemPrompt: string, _activatedSkillName?: string): string {
-    const availMatch = systemPrompt.match(/<available_skills>[\s\S]*?<\/available_skills>/);
-    if (availMatch) {
-      return systemPrompt.replace(
-        availMatch[0],
-        '<available_skills>\n<!-- Skill catalog routed by TypeSafe Jev; selected SOP paths are provided in navigation context. -->\n</available_skills>'
-      );
-    }
-    const skillsBlockMatch = systemPrompt.match(/<skills>[\s\S]*?<\/skills>/);
-    if (skillsBlockMatch) {
-      return systemPrompt.replace(
-        skillsBlockMatch[0],
-        '<skills>\n<!-- Skill catalog routed by TypeSafe Jev; selected SOP paths are provided in navigation context. -->\n</skills>'
-      );
-    }
     return systemPrompt;
   }
 

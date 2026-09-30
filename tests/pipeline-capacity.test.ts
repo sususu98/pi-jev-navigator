@@ -4,7 +4,7 @@ import { JevDualPipeline } from '../src/jev/pipeline.ts';
 import { JevPrompter } from '../src/jev/prompter.ts';
 import { estimateRequestTokens, MAX_REQUEST_TOKENS } from '../src/jev/capacity.ts';
 import { formatRoutingStats } from '../src/jev/stats.ts';
-import type { JevSystemOneRequest, JevChoiceAnswer, MemoryGuard, SkillSummary } from '../src/types.ts';
+import type { JevSystemOneRequest, MemoryGuard, SkillSummary } from '../src/types.ts';
 import { responseFor } from './support.ts';
 
 const inputs = { userPrompt: 'task', dsl: '[src]\n a.ts->A', estimatedTokens: 1, skills: [] as SkillSummary[], memories: [] as MemoryGuard[], safetyRules: [] as string[] };
@@ -18,11 +18,10 @@ function assertBounded(request: JevSystemOneRequest) {
   }
 }
 
-describe('bounded Jev tracks and catalog arbitration', () => {
+describe('bounded Jev tracks and independent catalog routing', () => {
   it('switches at exactly 28K using the complete serialized payload and real model name', async () => {
     const memories = [memory(0)];
     const { questions } = new JevPrompter().buildQuestions(inputs.dsl, [], [], memories);
-    delete questions.q2_active_skill;
     const base = { model: 'test', state: { user_task: '', codebase_trie_map: inputs.dsl }, questions };
     const padding = Math.floor(28000 * 2.85) - Buffer.byteLength(JSON.stringify(base));
     const requests: JevSystemOneRequest[] = [];
@@ -52,9 +51,9 @@ describe('bounded Jev tracks and catalog arbitration', () => {
     const decision = await pipeline(transport).execute({ ...inputs, skills }, { executionMode: 'parallel' });
     expect(decision?.pipelineMode).toBe('parallel');
     const a = requests.find((r) => r.questions.q1_target_subsystem)!;
-    const b = requests.find((r) => r.questions.q2_active_skill)!;
-    expect(a.questions.q2_active_skill).toBeUndefined();
-    expect(a.questions.q5_memory_guard).toBeUndefined();
+    const b = requests.find((r) => r.questions.q2_skill_0)!;
+    expect(a.questions.q2_skill_0).toBeUndefined();
+    expect(a.questions.q5_memory_0).toBeUndefined();
     expect(a.state.codebase_trie_map).toBe(inputs.dsl);
     expect(b.state.codebase_trie_map).toBeUndefined();
     expect(b.questions.q4_complexity_risk).toBeUndefined();
@@ -63,7 +62,7 @@ describe('bounded Jev tracks and catalog arbitration', () => {
     expect(formatRoutingStats(decision!)).toContain('Track B (Skills + Mem)');
   });
 
-  it('covers 1000 skills and 600 memories in bounded batches and lets Jev arbitrate their winners', async () => {
+  it('covers 1000 skills and 600 memories in bounded batches and preserves every independent strong Noul signal', async () => {
     const skills = Array.from({ length: 1000 }, (_, i) => ({ name: `skill-${i}`, description: `Metadata ${i} ${'details '.repeat(40)}`, path: `/fixture/${i}/SKILL.md` }));
     const memories = Array.from({ length: 600 }, (_, i) => memory(i));
     const seenSkills = new Set<string>(); const seenMemories = new Set<string>();
@@ -71,14 +70,14 @@ describe('bounded Jev tracks and catalog arbitration', () => {
     const transport = (async (_url, init) => {
       const r = parse(init); assertBounded(r); calls++;
       const response = responseFor(r);
-      for (const [id, wanted, seen] of [
-        ['q2_active_skill', 'skill_999', seenSkills], ['q5_memory_guard', 'mem_599', seenMemories],
-      ] as const) {
-        const q = r.questions[id]; if (q?.type !== 'choice') continue;
-        const keys = Object.keys(q.criteria).filter((key) => key !== 'none');
-        for (const key of keys) seen.add(key);
-        const choice = keys.includes(wanted) ? wanted : keys[0] ?? 'none';
-        response.answers[id] = { type: 'choice', choice, confidence: 1, probabilities: { [choice]: 1 } };
+      for (const [id, q] of Object.entries(r.questions)) {
+        if (!id.startsWith('q2_skill_') && !id.startsWith('q5_memory_')) continue;
+        expect(q.type).toBe('noul');
+        const seen = id.startsWith('q2_skill_') ? seenSkills : seenMemories;
+        expect(seen.has(id)).toBe(false); // no rerouting or batch top-1 elimination
+        seen.add(id);
+        const applicable = ['q2_skill_998', 'q2_skill_999', 'q5_memory_598', 'q5_memory_599'].includes(id);
+        response.answers[id] = { type: 'noul', noul: applicable ? 0.95 : 0.05 };
       }
       return Response.json(response);
     }) as typeof fetch;
@@ -87,12 +86,40 @@ describe('bounded Jev tracks and catalog arbitration', () => {
     expect(decision?.pipelineMode).toBe('parallel');
     expect(seenSkills.size).toBe(1000);
     expect(seenMemories.size).toBe(600);
-    expect(decision?.activatedSkillPath).toBe('/fixture/999/SKILL.md');
-    expect(decision?.activatedMemoryGuard?.id).toBe('mem_599');
+    expect(decision?.activatedSkills?.map(s => s.path)).toEqual(['/fixture/998/SKILL.md', '/fixture/999/SKILL.md']);
+    expect(decision?.activatedMemoryGuards?.map(m => m.id)).toEqual(['mem_598', 'mem_599']);
     expect(decision?.tokenBreakdown?.catalogRequests).toBeGreaterThan(2);
     expect(decision?.tokenBreakdown?.totalRequests).toBe(calls);
     expect(decision?.inputTokens).toBe(calls * 100);
     expect(formatRoutingStats(decision!)).toContain('aggregate,');
+  });
+
+  it('preserves globally strongest signals across batches and candidate permutations', async () => {
+    const skills = Array.from({ length: 350 }, (_, i) => ({ name: `s-${i}`, description: 'metadata '.repeat(40), path: `/s/${i}` }));
+    const memories = Array.from({ length: 350 }, (_, i) => ({ ...memory(i), rule: 'Whole memory constraint '.repeat(30) }));
+    const probability = (identity: string) => identity.endsWith('349') ? 0.99 : identity.endsWith('175') ? 0.97 : identity.endsWith('1') ? 0.8 : 0.05;
+    const transport = (async (_url, init) => {
+      const request = parse(init); assertBounded(request);
+      const response = responseFor(request);
+      for (const [id, question] of Object.entries(request.questions)) {
+        if (!id.startsWith('q2_skill_') && !id.startsWith('q5_memory_')) continue;
+        expect(question.type).toBe('noul');
+        const candidate = (question.instructions as any).candidate;
+        expect(JSON.stringify(request.state)).not.toContain(candidate.path ?? candidate.id);
+        response.answers[id] = { type: 'noul', noul: probability(candidate.path ?? candidate.id) };
+      }
+      return Response.json(response);
+    }) as typeof fetch;
+    for (const reverse of [false, true]) {
+      const result = await pipeline(transport).execute({ ...inputs,
+        skills: reverse ? [...skills].reverse() : skills,
+        memories: reverse ? [...memories].reverse() : memories,
+      }, { maxInjectedSkills: 2, maxInjectedMemoryGuards: 2 });
+      expect(result?.bypassed).not.toBe(true);
+      expect(result?.tokenBreakdown?.catalogRequests).toBeGreaterThan(1);
+      expect(result?.activatedSkills?.map(s => s.path)).toEqual(['/s/349', '/s/175']);
+      expect(result?.activatedMemoryGuards?.map(m => m.id)).toEqual(['mem_349', 'mem_175']);
+    }
   });
 
   it('partitions a large overview without dropping directories or records and merges coverage', async () => {
@@ -142,7 +169,7 @@ describe('bounded Jev tracks and catalog arbitration', () => {
       expect((await pipeline(transport).execute(fixture, {}))?.bypassed).toBe(true);
       expect(calls).toBe(0);
     }
-    const oversized = { ...inputs, skills: Array.from({ length: 300 }, (_, i) => ({ name: `s-${i}`, description: 'small', path: `/s/${i}` })) };
+    const oversized = { ...inputs, skills: Array.from({ length: 300 }, (_, i) => ({ name: `s-${i}`, description: 'details '.repeat(80), path: `/s/${i}` })) };
     expect((await pipeline(transport).execute(oversized, { executionMode: 'unified' }))?.bypassed).toBe(true);
     expect(calls).toBe(0);
     const client = new JevClient(undefined, undefined, 'FAKE', undefined, '/unused', transport);
@@ -150,17 +177,12 @@ describe('bounded Jev tracks and catalog arbitration', () => {
     expect(calls).toBe(0);
   });
 
-  it('uses one deadline across batching and arbitration, and cancels outstanding body reads', async () => {
-    const skills = Array.from({ length: 600 }, (_, i) => ({ name: `s-${i}`, description: 'small', path: `/s/${i}` }));
+  it('uses one deadline across all batches, and cancels outstanding body reads', async () => {
+    const skills = Array.from({ length: 2000 }, (_, i) => ({ name: `s-${i}`, description: 'small', path: `/s/${i}` }));
     let cancelled = 0;
     const transport = (async (_url, init) => {
       const r = parse(init); assertBounded(r);
       const response = responseFor(r);
-      const q = r.questions.q2_active_skill;
-      if (q?.type === 'choice') {
-        const choice = Object.keys(q.criteria).find((key) => key !== 'none') ?? 'none';
-        response.answers.q2_active_skill = { type: 'choice', choice, confidence: 1, probabilities: { [choice]: 1 } };
-      }
       let timer: ReturnType<typeof setTimeout>;
       return new Response(new ReadableStream({
         start(c) { timer = setTimeout(() => { c.enqueue(new TextEncoder().encode(JSON.stringify(response))); c.close(); }, 40); },
@@ -191,20 +213,21 @@ describe('bounded Jev tracks and catalog arbitration', () => {
     expect(calls).toBe(4);
   });
 
-  it('fails open if Jev returns non-converging shortlists instead of silently discarding candidates', async () => {
+  it('allows all memory candidates to apply without shortlist convergence or top-1 loss', async () => {
     const memories = Array.from({ length: 600 }, (_, i) => memory(i));
+    let calls = 0;
     const transport = (async (_url, init) => {
-      const r = parse(init); const response = responseFor(r);
-      const q = r.questions.q5_memory_guard;
-      if (q?.type === 'choice') {
-        const answer = response.answers.q5_memory_guard as JevChoiceAnswer;
-        answer.probabilities = Object.fromEntries(Object.keys(q.criteria).filter((key) => key !== 'none').map((key) => [key, 0.3]));
+      calls++;
+      const r = parse(init); assertBounded(r); const response = responseFor(r);
+      for (const id of Object.keys(r.questions).filter(id => id.startsWith('q5_memory_'))) {
+        response.answers[id] = { type: 'noul', noul: 0.95 };
       }
       return Response.json(response);
     }) as typeof fetch;
-    const decision = await pipeline(transport).execute({ ...inputs, dsl: '', memories }, {});
-    expect(decision?.bypassed).toBe(true);
-    expect(decision?.bypassReason).toContain('did not converge');
+    const decision = await pipeline(transport).execute({ ...inputs, dsl: '', memories }, { maxInjectedMemoryGuards: 600 });
+    expect(decision?.bypassed).not.toBe(true);
+    expect(decision?.activatedMemoryGuards).toHaveLength(600);
+    expect(decision?.tokenBreakdown?.totalRequests).toBe(calls);
   });
 
   it('shows zero usage per track and distinguishes actual usage from estimates', () => {

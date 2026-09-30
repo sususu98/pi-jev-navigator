@@ -5,6 +5,10 @@ import { appendNavigationTail } from './context-transform.js';
 type Messages = ContextWithSystemEvent['messages'];
 type Message = Messages[number];
 export const NAVIGATION_TAIL_ENTRY = 'jev-navigation-tail-v1';
+export const MAX_NAVIGATION_TAIL_CHARS = 256 * 1024;
+// Never publish a tail that a later replay would reject. Preserve whole guidance
+// or freeze absence; clipping could remove essential constraints or SOP paths.
+const boundedGuidance = (guidance: string) => guidance.length <= MAX_NAVIGATION_TAIL_CHARS ? guidance : '';
 interface CurrentTail {
   index: number; guidance: string; userEntryId?: string; bind?: (id: string) => void;
 }
@@ -36,7 +40,7 @@ function validRecord(value: unknown): value is FrozenTail {
   const r = value as FrozenTail;
   return r.version === 1 && typeof r.userEntryId === 'string' && Number.isFinite(r.userTimestamp)
     && typeof r.userContentHash === 'string' && /^[a-f0-9]{64}$/.test(r.userContentHash)
-    && typeof r.guidance === 'string' && r.guidance.length <= 256 * 1024;
+    && typeof r.guidance === 'string' && r.guidance.length <= MAX_NAVIGATION_TAIL_CHARS;
 }
 
 function sameUser(message: Message, source: Message, record?: FrozenTail): boolean {
@@ -81,7 +85,9 @@ export class NavigationTailLedger {
     }
     for (const [id, r] of this.failedSaves.get(sessionKey) ?? []) {
       const user = usersById.get(id);
-      if (!records.has(id) && user && user.message.timestamp === r.userTimestamp
+      // A native append can update the in-memory tree before its disk write throws.
+      // Failed publication must override that uncommitted non-empty record.
+      if (user && user.message.timestamp === r.userTimestamp
         && fingerprint(user.message) === r.userContentHash) records.set(id, r);
     }
     const bindings = new Map<number, string>();
@@ -115,7 +121,7 @@ export class NavigationTailLedger {
       if (id && user && (!current.userEntryId || current.userEntryId === id) && !records.has(id)) {
         const record: FrozenTail = {
           version: 1, userEntryId: id, userTimestamp: user.message.timestamp,
-          userContentHash: fingerprint(user.message), guidance: current.guidance,
+          userContentHash: fingerprint(user.message), guidance: boundedGuidance(current.guidance),
         };
         // Persist BEFORE publishing a new tail. On failure do not create another ephemeral
         // prefix that cannot survive reload. Existing historical tails remain replayable.
@@ -129,7 +135,11 @@ export class NavigationTailLedger {
           // save later must not add a tail to a user already sent upstream without one.
           let failed = this.failedSaves.get(sessionKey);
           if (!failed) { failed = new Map(); this.failedSaves.set(sessionKey, failed); }
-          const empty = { ...record, guidance: '' };
+          // SessionManager retains the data object when append precedes a failed save.
+          // It has never been published: freeze this new record to absence so even a
+          // later full-tree flush/reload cannot backfill an unsent tail.
+          record.guidance = '';
+          const empty = record;
           failed.set(id, empty);
           records.set(id, empty);
         }
@@ -156,7 +166,7 @@ export class NavigationTailLedger {
       const id = navigationMessageKey(message);
       if (!records.has(id)) records.set(id, {
         version: 1, userEntryId: id, userTimestamp: message.timestamp,
-        userContentHash: fingerprint(message), guidance: current.guidance,
+        userContentHash: fingerprint(message), guidance: boundedGuidance(current.guidance),
       });
     }
     let result = messages;

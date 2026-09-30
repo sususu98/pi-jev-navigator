@@ -2,6 +2,10 @@
  * Core type definitions for pi-jev-navigator
  */
 
+/** API descriptions may carry structured JSON with directly referenced fields. */
+export type JevDescription = string | number | boolean | null
+  | JevDescription[] | { [key: string]: JevDescription };
+
 export interface JevChoiceQuestion {
   type: 'choice';
   instructions: string;
@@ -16,8 +20,8 @@ export interface JevScoreQuestion {
 
 export interface JevNoulQuestion {
   type: 'noul';
-  instructions: string;
-  statement: string;
+  instructions: JevDescription;
+  criteria?: { true: JevDescription; false: JevDescription };
 }
 
 export type JevQuestion = JevChoiceQuestion | JevScoreQuestion | JevNoulQuestion;
@@ -54,7 +58,6 @@ export interface JevScoreAnswer {
 export interface JevNoulAnswer {
   type: 'noul';
   noul: number;
-  confidence: number;
 }
 
 export type JevAnswer = JevChoiceAnswer | JevScoreAnswer | JevNoulAnswer;
@@ -105,6 +108,7 @@ export interface DispatchDecision {
   memoryRetrieval?: MemoryRetrievalStats;
   targetSubsystems?: string[];
   targetFiles?: string[];
+  activatedSkills?: SkillSummary[];
   activatedSkill?: string;
   activatedSkillPath?: string;
   activatedMemoryGuard?: MemoryGuard | null;
@@ -147,9 +151,15 @@ export interface JevNavigatorConfig {
   maxMemoryGuards?: number;
   /** Maximum Jev-selected constraints appended to the user prompt. */
   maxInjectedMemoryGuards?: number;
+  /** Maximum independently applicable SOP skills in tail guidance (default 3). */
+  maxInjectedSkills?: number;
+  /** Minimum Noul applicability signal for SOP output; (0.5, 1], default 0.75. */
+  skillApplicabilityThreshold?: number;
+  /** Minimum Noul applicability signal for memory output; (0.5, 1], default 0.75. */
+  memoryApplicabilityThreshold?: number;
   /** Maximum locally retrieved memory candidates sent to Jev (default 64). */
   memoryCandidateLimit?: number;
-  /** Serialized memory-choice criteria budget, estimated tokens (default 8000). */
+  /** Serialized independent Noul memory-question budget, estimated tokens (default 8000). */
   memoryCandidateTokens?: number;
   cacheTtlDays?: number;
   logDecisions?: boolean;

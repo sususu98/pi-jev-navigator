@@ -638,7 +638,8 @@ describe('Tail Replay & Prompt Cache Invariance (jev-navigation-tail-v1)', () =>
     expect(firstText).toContain('sop-idempotent');
 
     const firstAppendCallsCount = h.piMock.appendEntry.mock.calls.length;
-    expect(firstAppendCallsCount).toBe(1);
+    // One fixed session policy plus one frozen user tail; neither is duplicated.
+    expect(firstAppendCallsCount).toBe(2);
 
     // Second context call (identical input)
     const secondCall = await h.emit('context_with_system', { messages: [sysMsg, structuredClone(userMsg)] }, ctx);

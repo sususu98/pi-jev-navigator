@@ -135,11 +135,9 @@ describe('pi-jev-navigator core test suite', () => {
           none_or_new: 0.05,
         },
       },
-      q2_active_skill: {
-        type: 'choice',
-        choice: 'skill_0',
-        confidence: 0.98,
-        probabilities: { skill_0: 0.98, none: 0.02 },
+      q2_skill_0: {
+        type: 'noul',
+        noul: 0.95,
       },
       q3_safety_guard: {
         type: 'choice',
@@ -182,7 +180,7 @@ describe('pi-jev-navigator core test suite', () => {
     expect(store.getRawFile('test.dsl')).toBeNull();
   });
 
-  it('should prune unactivated skills from System Prompt', () => {
+  it('never prunes rendered system instructions through the legacy API', () => {
     const injector = new TailInjector();
     const mockSystemPrompt = `You are an expert coding assistant...
 
@@ -190,28 +188,20 @@ describe('pi-jev-navigator core test suite', () => {
 The following skills provide specialized instructions for specific tasks.
 <available_skills>
   <skill>
-    <name>tavily-search</name>
+    <name>search-fixture</name>
     <description>Search web</description>
   </skill>
   <skill>
-    <name>local-cpa</name>
-    <description>Local CPA proxy management</description>
+    <name>proxy-fixture</name>
+    <description>Fixture proxy management</description>
   </skill>
 </available_skills>
 </skills>
 
-<cwd>/Users/sususu</cwd>`;
+<cwd>/fixture</cwd>`;
 
-    // Case 1: No skill activated
-    const prunedEmpty = injector.pruneSystemPromptSkills(mockSystemPrompt, undefined);
-    expect(prunedEmpty).not.toContain('tavily-search');
-    expect(prunedEmpty).not.toContain('local-cpa');
-    expect(prunedEmpty).toContain('Skill catalog routed');
-    expect(prunedEmpty).toContain('<cwd>/Users/sususu</cwd>');
-
-    // Case 2: Specific skill activated (local-cpa) -> still keeps system prompt 100% static
-    const prunedSingle = injector.pruneSystemPromptSkills(mockSystemPrompt, 'local-cpa');
-    expect(prunedSingle).toBe(prunedEmpty);
+    expect(injector.pruneSystemPromptSkills(mockSystemPrompt)).toBe(mockSystemPrompt);
+    expect(injector.pruneSystemPromptSkills(mockSystemPrompt, 'proxy-fixture')).toBe(mockSystemPrompt);
   });
 
   it('should format active memory guard into tail guidance', () => {

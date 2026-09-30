@@ -186,9 +186,29 @@ describe('Pi lifecycle integration', () => {
     expect(telemetryCalls).toHaveLength(2);
   });
 
+  it('shows every selected SOP path in explicit evaluation and honors an authoritative empty set', async () => {
+    let routed: DispatchDecision = { activatedSkills: [
+      { name: 'first', description: 'Fixture procedure', path: '/fixture/first/SKILL.md' },
+      { name: 'second', description: 'Fixture verification', path: '/fixture/second/SKILL.md' },
+    ], activatedSkill: 'first' };
+    const h = harness({ evaluate: async () => routed });
+    const ctx = context();
+    await h.commands['jev-eval'].handler('task', ctx);
+    expect(ctx.ui.notify.mock.calls[0][0]).toContain('/fixture/first/SKILL.md');
+    expect(ctx.ui.notify.mock.calls[0][0]).toContain('/fixture/second/SKILL.md');
+    routed = { activatedSkills: [], activatedSkill: 'stale' };
+    await h.commands['jev-eval'].handler('task', ctx);
+    expect(ctx.ui.notify.mock.calls[1][0]).toContain('Skills: None');
+    expect(ctx.ui.notify.mock.calls[1][0]).not.toContain('stale');
+  });
+
   it('displays the exact injected tail once, with full memory and SOP paths, and separate telemetry', async () => {
     const routed: DispatchDecision = {
       ...decision(), riskScore: 0.62, inputTokens: 8500,
+      activatedSkills: [
+        { name: 'fixture', description: 'Fixture procedure', path: '/skills/fixture/SKILL.md' },
+        { name: 'verify-fixture', description: 'Fixture verification', path: '/skills/verify-fixture/SKILL.md' },
+      ],
       activatedMemoryGuards: [{
         id: 'guard', category: 'correction', title: 'A title that must not replace the actual constraint',
         summary: 'Complete constraint beyond thirty characters.\nSecond line must also be visible.', rule: 'full rule',
@@ -215,6 +235,7 @@ describe('Pi lifecycle integration', () => {
     expect(telemetry).not.toContain('Memory: Memory:');
     expect(telemetry).not.toContain('Guard:');
     expect(modelTail).toContain('/skills/fixture/SKILL.md');
+    expect(modelTail).toContain('/skills/verify-fixture/SKILL.md');
     expect(modelTail).toContain(routed.activatedMemoryGuards![0].summary);
     expect(modelTail).not.toContain('eligible');
     expect(modelTail).not.toContain('Input Tokens');
@@ -243,7 +264,7 @@ describe('Pi lifecycle integration', () => {
     expect(brokenCtx.ui.notify.mock.calls).toHaveLength(1);
   });
 
-  it('does not display nonexistent, bypassed, cancelled, or steering tails', async () => {
+  it('does not display nonexistent tails and binds initial guidance before first-request steering', async () => {
     for (const options of [{ hasKey: false }, { evaluate: async () => null }, { evaluate: async () => ({ bypassed: true }) }]) {
       const h = harness(options); const ctx = context(); ctx.hasUI = true;
       await h.emit('before_agent_start', { prompt: 'task' }, ctx);
@@ -255,10 +276,11 @@ describe('Pi lifecycle integration', () => {
     await h.emit('message_end', { message: messages()[1] }, ctx);
     const steered = messages(); steered.push({ role: 'user', content: 'steering', timestamp: 10 });
     await h.emit('context_with_system', { messages: steered }, ctx);
-    expect(ctx.ui.notify.mock.calls).toHaveLength(0); // no injected tail, no card
+    expect(ctx.ui.notify.mock.calls).toHaveLength(1); // initial user's tail, never steering's
+    expect(ctx.ui.notify.mock.calls[0][0]).toContain('/skills/fixture/SKILL.md');
     ctx.signal = AbortSignal.abort();
     await h.emit('context_with_system', { messages: messages() }, ctx);
-    expect(ctx.ui.notify.mock.calls).toHaveLength(0);
+    expect(ctx.ui.notify.mock.calls).toHaveLength(1);
   });
 
   it('redacts the API key from the config command', async () => {
@@ -270,7 +292,7 @@ describe('Pi lifecycle integration', () => {
     expect(text).toContain('[REDACTED]');
   });
 
-  it('prunes systemPromptOptions.skills natively in before_agent_start', async () => {
+  it('applies a fixed native skill-catalog policy independently of routing decisions', async () => {
     // 1. When activated skill matches -> systemPromptOptions.skills is emptied to keep system prompt 100% static
     const h1 = harness({ evaluate: async () => decision('skill-a') });
     const ev1: any = {

@@ -19,45 +19,36 @@ export function assertRequestCapacity(request: RoutingRequest, model: string): v
   if (!fitsRequest(request, model)) throw new Error('Jev request exceeds estimated 32K context or 255-choice capacity');
 }
 
-const sentinels: Record<string, string> = {
-  q1_target_subsystem: 'none_or_new', q2_active_skill: 'none',
-  q3_safety_guard: 'standard_safe', q5_memory_guard: 'none',
-};
-
-interface Candidate { question: string; key: string; value: string }
-
-/** Capacity partitioning only: stable IDs and complete metadata survive every batch. */
+/** Split complete independent questions; only the legacy safety choice needs option partitioning. */
 export function partitionCatalog(request: RoutingRequest, model: string): RoutingRequest[] {
   if (fitsRequest(request, model)) return [request];
-  const candidates: Candidate[] = [];
+  const units: Array<{ id: string; question: JevQuestion }> = [];
   for (const [id, question] of Object.entries(request.questions)) {
-    if (question.type !== 'choice') continue;
-    for (const [key, value] of Object.entries(question.criteria)) {
-      if (key !== sentinels[id]) candidates.push({ question: id, key, value });
-    }
+    if (id === 'q3_safety_guard' && question.type === 'choice') {
+      const entries = Object.entries(question.criteria).filter(([key]) => key !== 'standard_safe');
+      if (!entries.length) units.push({ id, question });
+      for (const [key, value] of entries) units.push({ id, question: {
+        ...question, criteria: { [key]: value, standard_safe: question.criteria.standard_safe },
+      } });
+    } else units.push({ id, question });
   }
-  const make = (items: Candidate[]): RoutingRequest => {
+  const make = (items: typeof units): RoutingRequest => {
     const questions: Record<string, JevQuestion> = {};
-    for (const [id, question] of Object.entries(request.questions)) {
-      if (question.type !== 'choice') { questions[id] = question; continue; }
-      const entries = items.filter((item) => item.question === id);
-      const originallyEmpty = Object.keys(question.criteria).length === 1;
-      if (!entries.length && !originallyEmpty) continue;
-      const none = sentinels[id];
-      questions[id] = { ...question, criteria: Object.fromEntries([
-        ...entries.map((item) => [item.key, item.value]), [none, question.criteria[none]],
-      ]) };
+    for (const { id, question } of items) {
+      const previous = questions[id];
+      questions[id] = previous?.type === 'choice' && question.type === 'choice'
+        ? { ...question, criteria: { ...previous.criteria, ...question.criteria } } : question;
     }
     return { state: request.state, questions };
   };
-  const split = (items: Candidate[]): RoutingRequest[] => {
+  const split = (items: typeof units): RoutingRequest[] => {
     const chunk = make(items);
     if (fitsRequest(chunk, model)) return [chunk];
     if (items.length <= 1) throw new Error('Jev task or individual catalog candidate exceeds request capacity');
     const mid = Math.ceil(items.length / 2);
     return [...split(items.slice(0, mid)), ...split(items.slice(mid))];
   };
-  return split(candidates);
+  return split(units);
 }
 
 /** Keep every overview line; repeat directory headers when a block crosses batch boundaries. */

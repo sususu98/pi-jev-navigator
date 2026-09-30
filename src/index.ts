@@ -176,7 +176,11 @@ export class JevNavigator {
       pipeline_mode: decision.pipelineMode, token_breakdown: decision.tokenBreakdown,
       memory_retrieval: decision.memoryRetrieval,
       estimated_payload_tokens: decision.estimatedPayloadTokens, estimated_track_tokens: decision.estimatedTrackTokens,
-      target_subsystems: decision.targetSubsystems, activated_skill: decision.activatedSkill ?? null,
+      target_subsystems: decision.targetSubsystems,
+      activated_skill: decision.activatedSkills === undefined ? decision.activatedSkill ?? null
+        : decision.activatedSkills[0]?.name ?? null,
+      activated_skills: decision.activatedSkills ?? (decision.activatedSkill
+        ? [{ name: decision.activatedSkill, path: decision.activatedSkillPath }] : []),
       activated_memory_guard: guards[0] ?? null, activated_memory_guards: guards,
       risk_score: decision.riskScore, confidence: decision.confidence, raw_answers: decision.rawAnswers,
     }, sessionMeta);
@@ -294,7 +298,8 @@ export default function registerJevNavigatorExtension(
         ctx.ui.notify([
           '🎯 [Jev Decision Result]',
           `• Target: ${decision.targetSubsystems?.join(', ') || 'General'}`,
-          `• Skill: ${decision.activatedSkill || 'None'}`,
+          `• Skills: ${(decision.activatedSkills === undefined ? decision.activatedSkill
+            : decision.activatedSkills.map(skill => `${skill.name} (${JSON.stringify(skill.path)})`).join(', ')) || 'None'}`,
           `• Safety: ${decision.safetyRules?.join('; ') || 'Standard'}`,
           `• Risk: ${decision.riskScore ?? 0}`,
           `• Stats: ${formatRoutingStats(decision)}`,

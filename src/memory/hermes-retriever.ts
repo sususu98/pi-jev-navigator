@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { parse } from 'jsonc-parser/lib/esm/main.js';
 import { resolveGitContext } from '../graph/git.js';
-import { MEMORY_GUARD_INSTRUCTIONS } from '../jev/prompter.js';
+import { buildMemoryQuestions } from '../jev/prompter.js';
 import type { MemoryGuard, MemoryRetrievalStats } from '../types.js';
 
 interface Row {
@@ -52,16 +52,13 @@ export function memoryFromRow(row: Row): MemoryGuard {
   };
 }
 
-/** Budget is the actual serialized q5 criteria contribution, not raw Markdown size. */
+/** Budget includes every structured Noul question and its complete memory text. */
 export function boundMemoryCandidates(rows: Row[][], maxCandidates: number, maxTokens: number): {
   memories: MemoryGuard[]; retrieved: number; budgetLimited: boolean; estimatedTokens: number;
 } {
   const unique = new Set<number>();
   const memories: MemoryGuard[] = [];
-  const criteria: Record<string, string> = { none: 'No specific memory constraint or past correction applies to this task' };
-  const bytes = () => Buffer.byteLength(JSON.stringify({ q5_memory_guard: {
-    type: 'choice', instructions: MEMORY_GUARD_INSTRUCTIONS, criteria,
-  } }), 'utf8');
+  const bytes = () => Buffer.byteLength(JSON.stringify(buildMemoryQuestions(memories)), 'utf8');
   let limited = false;
   const retrieved = new Set(rows.flat().map((r) => r.id)).size;
   // Round-robin preserves representation from both scopes and guard/general channels.
@@ -72,11 +69,10 @@ export function boundMemoryCandidates(rows: Row[][], maxCandidates: number, maxT
       unique.add(row.id);
       const memory = memoryFromRow(row);
       if (memories.length >= maxCandidates) { limited = true; continue; }
-      criteria[memory.id] = `[${memory.category}] ${memory.summary}`;
-      if (Math.ceil(bytes() / 2.85) > maxTokens) {
-        delete criteria[memory.id]; limited = true; continue; // skip whole record, never slice a rule
-      }
       memories.push(memory);
+      if (Math.ceil(bytes() / 2.85) > maxTokens) {
+        memories.pop(); limited = true; continue; // skip whole record, never slice a rule
+      }
     }
   }
   return { memories, retrieved, budgetLimited: limited, estimatedTokens: memories.length ? Math.ceil(bytes() / 2.85) : 0 };

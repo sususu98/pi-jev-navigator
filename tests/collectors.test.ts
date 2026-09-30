@@ -74,7 +74,7 @@ describe('memory candidate identity', () => {
     const rebuilt = new MemoryCollector(home).collectMemories(root, 100);
     expect(rebuilt.map((entry) => entry.id)).toEqual(found.map((entry) => entry.id));
     const built = new JevPrompter().buildQuestions('', [], [], found);
-    expect(Object.keys((built.questions.q5_memory_guard as any).criteria)).toHaveLength(5);
+    expect(Object.keys(built.questions).filter(id => id.startsWith('q5_memory_'))).toHaveLength(4);
   });
 
   it('preserves distinct long bodies and the configured total limit', () => {

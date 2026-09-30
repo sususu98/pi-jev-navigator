@@ -5,6 +5,7 @@ import type { DispatchDecision } from './types.js';
 import { TailInjector } from './injector/tail-injector.js';
 import { formatRoutingStats, formatMemoryRetrieval } from './jev/stats.js';
 import { NavigationTailLedger, navigationMessageKey } from './injector/tail-ledger.js';
+import { SessionSkillPolicy } from './injector/skill-policy.js';
 
 /** Request-local transformations only; never rewrite provider payloads or persisted transcripts. */
 export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: string) => JevNavigator): void {
@@ -35,9 +36,10 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     return false;
   };
 
-  type Run = { decision?: DispatchDecision; guidance?: string; userKey?: string; userEntryId?: string; guidanceDisplayed?: boolean; telemetry?: string };
+  type Run = { decision?: DispatchDecision; guidance?: string; userKey?: string; userEntryId?: string; userOccurrence?: number; guidanceDisplayed?: boolean; telemetry?: string };
   const runs = new Map<string, Run>();
   const ledger = new NavigationTailLedger(pi);
+  const skillPolicy = new SessionSkillPolicy(pi);
   const keyFor = (ctx: ExtensionContext) => JSON.stringify([
     path.resolve(ctx.cwd), ctx.sessionManager?.getSessionId?.() ?? ctx.sessionManager?.getSessionFile?.() ?? '',
   ]);
@@ -65,7 +67,14 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     const run: Run = {};
     runs.set(key, run); // invalidate any pending result from an earlier prompt in this session
     let workingMessage = false;
+    // Capture routing metadata before applying the session's fixed catalog policy.
+    const hostSkills = event.systemPromptOptions?.skills;
     try {
+      const omitCatalog = skillPolicy.resolve(ctx, key, () => {
+        try { return !isJevDisabled(ctx) && getNavigator(ctx.cwd).getConfig().enableSkills !== false; }
+        catch { return false; } // A broken config must not later flip the session policy.
+      });
+      if (omitCatalog && event.systemPromptOptions) event.systemPromptOptions.skills = [];
       if (!event.prompt || event.prompt.startsWith('/') || isJevDisabled(ctx)) return;
       const nav = getNavigator(ctx.cwd);
       const config = nav.getConfig();
@@ -75,7 +84,6 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
         workingMessage = true;
       }
       // Pi's canonical catalog includes package/custom paths and excludes disabled resources.
-      const hostSkills = event.systemPromptOptions?.skills;
       const skills = hostSkills?.filter((skill) => !skill.disableModelInvocation)
         .map((skill) => ({ name: skill.name, description: skill.description, path: skill.filePath }));
       const decision = await nav.evaluatePrompt(event.prompt, [], {
@@ -85,15 +93,6 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
       if (runs.get(key) !== run || ctx.signal?.aborted || !decision || decision.bypassed) return;
       run.decision = decision;
       run.guidance = new TailInjector().formatTailGuidance(decision);
-
-      // System Prompt Purity Invariant:
-      // Completely empty event.systemPromptOptions.skills to prevent Pi from injecting 56KB+
-      // of skill catalog into system instructions. System prompt stays 100% bit-for-bit static
-      // across all turns (even when skills are activated), preserving LCP cache permanently.
-      // Activated skills are exclusively routed via user prompt tail navigation.
-      if (config.enableSkills !== false && event.systemPromptOptions?.skills) {
-        event.systemPromptOptions.skills = [];
-      }
 
       // Human-only telemetry is never part of the frozen model tail.
       const stats = [formatRoutingStats(decision)];
@@ -114,6 +113,15 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     const run = runs.get(keyFor(ctx));
     if (run && run.userKey === undefined && event.message.role === 'user') {
       run.userKey = navigationMessageKey(event.message);
+      const branch = ctx.sessionManager?.getBranch?.();
+      if (branch) {
+        const matches = branch.filter(entry => entry.type === 'message' && entry.message.role === 'user'
+          && navigationMessageKey(entry.message) === run.userKey);
+        // Native message_end precedes persistence; minimal hosts may emit after it.
+        const known = matches.findIndex(entry => entry.type === 'message' && entry.message === event.message);
+        run.userOccurrence = known >= 0 ? known : matches.length;
+        if (known >= 0) run.userEntryId = matches[known].id;
+      }
     }
   });
 
@@ -127,11 +135,15 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     }
     let current: { index: number; guidance: string; userEntryId?: string; bind?: (id: string) => void } | undefined;
     if (run && latestIndex >= 0 && !ctx.signal?.aborted) {
-      const messageKey = navigationMessageKey(event.messages[latestIndex]);
-      if (run.userKey === undefined) run.userKey = messageKey;
-      // Steering/new branches need a fresh decision. Still replay ALL historical tails.
-      if (run.userKey === messageKey) current = {
-        index: latestIndex, guidance: run.guidance ?? '', userEntryId: run.userEntryId,
+      if (run.userKey === undefined) run.userKey = navigationMessageKey(event.messages[latestIndex]);
+      // Bind the initial prompt even when steering arrives before the first request.
+      // Never attach its guidance to the newest (different) user message.
+      const matchingIndices = event.messages.flatMap((message, index) => message.role === 'user'
+        && navigationMessageKey(message) === run.userKey ? [index] : []);
+      const index = run.userOccurrence === undefined
+        ? matchingIndices.at(-1) : matchingIndices[run.userOccurrence];
+      if (index !== undefined) current = {
+        index, guidance: run.guidance ?? '', userEntryId: run.userEntryId,
         bind: id => { run.userEntryId = id; },
       };
     }
@@ -172,5 +184,6 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
   pi.on('session_shutdown', async (_event, ctx) => {
     runs.delete(keyFor(ctx));
     ledger.clearFallback(keyFor(ctx));
+    skillPolicy.clear(keyFor(ctx));
   });
 }

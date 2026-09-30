@@ -1,5 +1,5 @@
 import type {
-  DispatchDecision, JevNavigatorConfig, SkillSummary, MemoryGuard, JevAnswer, JevQuestion,
+  DispatchDecision, JevNavigatorConfig, SkillSummary, MemoryGuard, JevAnswer,
 } from '../types.js';
 import { JevClient } from './client.js';
 import { JevPrompter } from './prompter.js';
@@ -63,7 +63,7 @@ export class JevDualPipeline {
     const budget = Math.min(config.timeoutMs ?? 1500, 1500);
     const deadline = t0 + budget;
     const timer = setTimeout(() => controller.abort(new Error('Jev routing deadline exceeded')), budget);
-    // Shared across both tracks and every shortlist round, not four workers per track.
+    // Shared across both tracks and all capacity batches, not four workers per track.
     let active = 0;
     const waiters: Array<() => void> = [];
     const dispatch: Dispatch = async (request) => {
@@ -89,8 +89,6 @@ export class JevDualPipeline {
       const { questions, dirCriteriaMap } = this.prompter.buildQuestions(dsl, skills, inputs.safetyRules, memories, inputs.userPrompt);
       const hasOverview = Object.keys(dirCriteriaMap).length > 0;
       if (!hasOverview) delete questions.q1_target_subsystem;
-      if (!skills.length) delete questions.q2_active_skill;
-      if (!memories.length) delete questions.q5_memory_guard;
       const model = this.client.getModel();
       const unified: RoutingRequest = {
         state: { user_task: inputs.userPrompt, ...(hasOverview ? { codebase_trie_map: dsl } : {}) }, questions,
@@ -117,7 +115,7 @@ export class JevDualPipeline {
         const bBatches = partitionCatalog(b, model); // preflight both tracks before dispatching either
         estimatedTrackTokens = { overview: estimateRequestTokens(a, model), catalog: estimateRequestTokens(b, model) };
         [overview, catalog] = await Promise.all([
-          this.evaluateOverview(aBatches, dispatch), this.evaluateCatalog(b, bBatches, model, dispatch),
+          this.evaluateOverview(aBatches, dispatch), this.evaluateCatalog(bBatches, dispatch),
         ]);
       } else if (fitsRequest(unified, model)) {
         combined = await dispatch(unified);
@@ -127,12 +125,13 @@ export class JevDualPipeline {
         estimatedTrackTokens = { unified: estimatedPayloadTokens };
         combined = hasOverview
           ? await this.evaluateOverview(partitionOverview(unified, model), dispatch)
-          : await this.evaluateCatalog(unified, partitionCatalog(unified, model), model, dispatch);
+          : await this.evaluateCatalog(partitionCatalog(unified, model), dispatch);
       }
       const tokens = combined?.tokens ?? overview!.tokens + catalog!.tokens;
       const decision = this.prompter.parseAnswers(
         combined?.answers ?? { ...overview!.answers, ...catalog!.answers }, skills, dirCriteriaMap,
-        Date.now() - t0, tokens, memories, inputs.safetyRules, config.maxInjectedMemoryGuards ?? 3,
+        Date.now() - t0, tokens, memories, inputs.safetyRules, config.maxInjectedMemoryGuards ?? 3, config.maxInjectedSkills ?? 3,
+        config.skillApplicabilityThreshold, config.memoryApplicabilityThreshold,
       );
       decision.pipelineMode = parallel ? 'parallel' : 'unified';
       decision.estimatedPayloadTokens = estimatedPayloadTokens;
@@ -155,46 +154,27 @@ export class JevDualPipeline {
     return mergeOverview(await Promise.all(requests.map(dispatch)));
   }
 
-  private async evaluateCatalog(
-    template: RoutingRequest, initialBatches: RoutingRequest[], model: string, dispatch: Dispatch,
-  ): Promise<TrackResult> {
-    let current = template;
-    let batches = initialBatches;
-    let tokens = 0;
-    let requests = 0;
-    // Jev winners/probabilities drive the shortlist, never client keywords or metadata scores.
-    for (let round = 0; round < 8; round++) {
-      const results = await Promise.all(batches.map(dispatch));
-      tokens += results.reduce((sum, result) => sum + result.tokens, 0);
-      requests += results.length;
-      if (batches.length === 1) return { answers: results[0].answers, tokens, requests };
-      const questions: Record<string, JevQuestion> = {};
-      let before = 0;
-      let after = 0;
-      for (const [id, question] of Object.entries(current.questions)) {
-        if (question.type !== 'choice') { questions[id] = question; continue; }
-        const none = id === 'q3_safety_guard' ? 'standard_safe' : 'none';
-        const keys = new Set<string>();
-        before += Object.keys(question.criteria).length - 1;
-        for (const { answers } of results) {
-          const answer = answers[id];
-          if (answer?.type !== 'choice') continue;
-          if (answer.choice !== none && (id === 'q3_safety_guard' || answer.confidence >= 0.35)) keys.add(answer.choice);
-          if (id === 'q2_active_skill') continue;
+  private async evaluateCatalog(batches: RoutingRequest[], dispatch: Dispatch): Promise<TrackResult> {
+    const results = await Promise.all(batches.map(dispatch));
+    const answers: Record<string, JevAnswer> = {};
+    const rules = new Set<string>();
+    for (const result of results) {
+      for (const [id, answer] of Object.entries(result.answers)) {
+        if (id === 'q3_safety_guard' && answer.type === 'choice') {
+          if (answer.choice !== 'standard_safe') rules.add(answer.choice);
           for (const [key, probability] of Object.entries(answer.probabilities ?? {})) {
-            if (key !== none && probability >= (id === 'q5_memory_guard' ? 0.25 : 0.3)) keys.add(key);
+            if (key !== 'standard_safe' && probability >= 0.3) rules.add(key);
           }
+        } else {
+          if (answers[id]) throw new Error('Duplicate independent catalog answer');
+          answers[id] = answer;
         }
-        after += keys.size;
-        questions[id] = { ...question, criteria: Object.fromEntries([
-          ...[...keys].map((key) => [key, question.criteria[key]]), [none, question.criteria[none]],
-        ]) };
       }
-      current = { state: template.state, questions };
-      const next = partitionCatalog(current, model);
-      if (next.length > 1 && after >= before) throw new Error('Jev shortlist did not converge within capacity');
-      batches = next; // re-evaluate winners together; batch-local confidence is not globally comparable
     }
-    throw new Error('Jev shortlist exceeded bounded routing rounds');
+    if (results.some(r => r.answers.q3_safety_guard)) answers.q3_safety_guard = {
+      type: 'choice', choice: rules.values().next().value ?? 'standard_safe', confidence: 1,
+      probabilities: Object.fromEntries([...rules].map(key => [key, 1])),
+    };
+    return { answers, tokens: results.reduce((sum, r) => sum + r.tokens, 0), requests: results.length };
   }
 }

@@ -146,6 +146,10 @@ describe('JevNavigator integration', () => {
         tokenBreakdown: { codeTokens: 60, memoryTokens: 60, totalTokens: 120 },
         targetSubsystems: ['src/core'],
         activatedSkill: 'test-skill',
+        activatedSkills: [
+          { name: 'test-skill', description: 'Fixture procedure', path: '/fixture/first/SKILL.md' },
+          { name: 'verify-fixture', description: 'Fixture verification', path: '/fixture/second/SKILL.md' },
+        ],
         activatedMemoryGuards: ['rule-a', 'rule-b'],
         activatedMemoryGuard: 'rule-a',
         riskScore: 0,
@@ -182,11 +186,16 @@ describe('JevNavigator integration', () => {
       const entry1 = JSON.parse(lines[0]);
       expect(entry1.prompt).toBe('prompt 1');
       expect(entry1.activated_memory_guards).toEqual(['rule-a', 'rule-b']);
+      expect(entry1.activated_skills).toEqual(mockDecision.activatedSkills);
       expect(entry1.token_breakdown).toEqual({ codeTokens: 60, memoryTokens: 60, totalTokens: 120 });
       expect(entry1.pipeline_mode).toBe('parallel');
 
       const entry2 = JSON.parse(lines[1]);
       expect(entry2.prompt).toBe('prompt 2');
+      nav.logDecisionToFile('empty authoritative skills', { ...mockDecision, activatedSkills: [], activatedSkill: 'stale' }, sessionMeta);
+      const emptySkills = JSON.parse(fs.readFileSync(logFile, 'utf8').trim().split('\n').at(-1)!);
+      expect(emptySkills.activated_skill).toBeNull();
+      expect(emptySkills.activated_skills).toEqual([]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
       fs.rmSync(project, { recursive: true, force: true });
@@ -253,10 +262,10 @@ describe('JevNavigator integration', () => {
       expect(decision).not.toBeNull();
       // subsystems disabled => state codebase trie map empty
       expect(receivedState.codebase_trie_map).toBeUndefined();
-      // memories disabled => no q5_memory_guard
-      expect(receivedQuestions.q5_memory_guard).toBeUndefined();
-      // skills passed explicitly => q2_active_skill criteria has my-skill
-      expect(receivedQuestions.q2_active_skill).toBeDefined();
+      // memories disabled => no q5_memory_0
+      expect(receivedQuestions.q5_memory_0).toBeUndefined();
+      // skills passed explicitly => q2_skill_0 criteria has my-skill
+      expect(receivedQuestions.q2_skill_0).toBeDefined();
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
       fs.rmSync(project, { recursive: true, force: true });
@@ -277,10 +286,8 @@ describe('JevNavigator integration', () => {
         receivedQuestions = body.questions;
         receivedState = body.state;
         const res = responseFor(body);
-        const memKeys = Object.keys(body.questions.q5_memory_guard?.criteria || {}).filter((k: string) => k !== 'none');
-        if (memKeys.length > 0) {
-          (res.answers.q5_memory_guard as any).choice = memKeys[0];
-          (res.answers.q5_memory_guard as any).probabilities = { [memKeys[0]]: 1 };
+        if (body.questions.q5_memory_0) {
+          res.answers.q5_memory_0 = { type: 'noul', noul: 0.95 };
         }
         return Response.json(res);
       }) as typeof fetch;
@@ -306,8 +313,8 @@ describe('JevNavigator integration', () => {
       expect(receivedQuestions.q1_target_subsystem).toBeUndefined();
 
       // Memories honored according to fallback config
-      expect(receivedQuestions.q5_memory_guard).toBeDefined();
-      expect(JSON.stringify(receivedQuestions.q5_memory_guard.criteria)).toContain('Always run tests before commit');
+      expect(receivedQuestions.q5_memory_0).toBeDefined();
+      expect(JSON.stringify(receivedQuestions.q5_memory_0.instructions)).toContain('Always run tests before commit');
 
       // Guidance formatting check: Tail injector should only inject memory, no subsystem
       const guidance = new TailInjector().formatTailGuidance(decision!);

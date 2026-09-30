@@ -89,6 +89,30 @@ describe('Jev request boundaries', () => {
     }
   });
 
+  it('accepts official Noul wire answers without confidence while Choice and Score still require it', async () => {
+    const questions = {
+      fit: { type: 'noul' as const, instructions: { question: 'Does this candidate apply?', candidate: guard, boundary: 'Evaluate independently' }, criteria: { true: 'Applies', false: 'Does not apply' } },
+      choice: question.q,
+      score: { type: 'score' as const, instructions: 'Rate risk', criteria: ['low', 'high'] },
+    };
+    const response = responseFor({ questions });
+    response.answers.fit = { type: 'noul', noul: 0.95 };
+    expect(response.answers.fit).not.toHaveProperty('confidence');
+    expect(() => validateJevResponse(response, questions)).not.toThrow();
+    const client = new JevClient(undefined, undefined, 'FAKE', undefined, '/unused', (async () => Response.json(response)) as typeof fetch);
+    expect((await client.evaluate({ state: { user_task: 'test' }, questions })).response.answers.fit).toEqual({ type: 'noul', noul: 0.95 });
+    for (const id of ['choice', 'score']) {
+      const malformed = structuredClone(response);
+      delete (malformed.answers[id] as any).confidence;
+      expect(() => validateJevResponse(malformed, questions)).toThrow();
+    }
+    for (const invalid of [-0.1, 1.1, NaN, Infinity, '0.95', null]) {
+      const malformed = structuredClone(response);
+      (malformed.answers.fit as any).noul = invalid;
+      expect(() => validateJevResponse(malformed, questions)).toThrow();
+    }
+  });
+
   it('honors an explicit trusted keyFilePath and disallows redirects', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-key-'));
     try {
@@ -112,10 +136,10 @@ describe('Jev candidate mapping and pipeline', () => {
     const rules = ['Never run destructive production commands'];
     const built = prompter.buildQuestions(inputs.dsl, skills, rules);
     expect(Object.keys(built.dirCriteriaMap)).toHaveLength(2);
-    expect(Object.keys((built.questions.q2_active_skill as any).criteria)).toHaveLength(3);
+    expect(Object.keys((built.questions.q2_skill_1 as any).criteria)).toEqual(['true', 'false']);
     const response = responseFor(built);
     (response.answers.q1_target_subsystem as any).choice = 'dir_1';
-    (response.answers.q2_active_skill as any).choice = 'skill_1';
+    response.answers.q2_skill_1 = { type: 'noul', noul: 0.95 };
     (response.answers.q3_safety_guard as any).choice = 'rule_0';
     const decision = prompter.parseAnswers(response.answers, skills, built.dirCriteriaMap, 1, 1, [], rules);
     expect(decision.targetSubsystems).toEqual(['src/a/b']);
@@ -135,7 +159,7 @@ describe('Jev candidate mapping and pipeline', () => {
     const decision = await pipeline(transport).execute({ ...inputs, memories: [guard] }, { executionMode: 'parallel', enableMemories: false, enableSubsystems: false });
     expect(decision?.pipelineMode).toBe('unified');
     expect(requests).toHaveLength(1);
-    expect(requests[0].questions.q5_memory_guard).toBeUndefined();
+    expect(requests[0].questions.q5_memory_0).toBeUndefined();
     expect(requests[0].state.codebase_trie_map).toBeUndefined();
   });
 
@@ -152,13 +176,13 @@ describe('Jev candidate mapping and pipeline', () => {
     const seen = new Set<string>();
     const transport = (async (_url, init) => {
       const body = JSON.parse(String(init?.body));
-      const criteria = body.questions.q2_active_skill?.criteria ?? {};
-      expect(Object.keys(criteria).length).toBeLessThanOrEqual(255);
-      for (const [id, description] of Object.entries(criteria)) {
-        if (id === 'none') continue;
-        const i = Number(id.slice('skill_'.length));
-        expect(description).toContain(skills[i].description);
-        expect(description).toContain(skills[i].path);
+      for (const [id, q] of Object.entries(body.questions) as [string, any][]) {
+        if (!id.startsWith('q2_skill_')) continue;
+        expect(Object.keys(q.criteria)).toEqual(['true', 'false']);
+        const i = Number(id.slice('q2_skill_'.length));
+        expect(q.type).toBe('noul');
+        expect(q.instructions.candidate).toEqual(skills[i]);
+        expect(body.state).toEqual({ user_task: 'x' });
         seen.add(id);
       }
       return Response.json(responseFor(body));
