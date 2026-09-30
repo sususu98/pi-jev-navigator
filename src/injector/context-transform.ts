@@ -18,23 +18,6 @@ export function transformNavigationContext(
   const injector = new TailInjector();
   const tail = guidance ?? injector.formatTailGuidance(decision);
   const result = messages.slice();
-  if (config.enableSystemPromptPruning !== false && config.enableSkills !== false) {
-    for (let i = 0; i < result.length; i++) {
-      const message = result[i];
-      if (message.role !== 'system') continue;
-      const updated = { ...message };
-      if (typeof message.sections?.skills === 'string') {
-        updated.sections = {
-          ...message.sections,
-          skills: injector.pruneSystemPromptSkills(message.sections.skills, decision.activatedSkill),
-        };
-      }
-      if (!message.sections && typeof message.content === 'string') {
-        updated.content = injector.pruneSystemPromptSkills(message.content, decision.activatedSkill);
-      }
-      result[i] = updated;
-    }
-  }
   const user = result[userIndex];
   if (user.role === 'user') {
     result[userIndex] = {

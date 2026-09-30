@@ -3,13 +3,15 @@ import * as path from 'path';
 import * as os from 'os';
 import * as jsonc from 'jsonc-parser/lib/esm/main.js';
 import { JevNavigatorConfig, ExecutionMode } from '../types.js';
+import { resolveGitContext } from '../graph/git.js';
 
 export const { applyEdits, modify, parse } = jsonc;
 export type ParseError = jsonc.ParseError;
 
-export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFilePath' | 'endpoint' | 'model'>> & {
+export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFilePath' | 'endpoint' | 'model' | 'projects'>> & {
   endpoint: string;
   model: string;
+  projects?: JevNavigatorConfig['projects'];
 } = {
   endpoint: 'https://api.typesafe.ai/v1/systemone',
   model: 'jev-latest',
@@ -17,7 +19,7 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   enableSubsystems: true,
   enableSkills: true,
   enableMemories: true,
-  enableSystemPromptPruning: true,
+  enableSystemPromptPruning: false,
   executionMode: 'auto',
   timeoutMs: 1500,
   maxMemoryGuards: 80,
@@ -40,6 +42,7 @@ const CONFIG_KEYS = new Set<keyof JevNavigatorConfig>([
   'apiKey', 'keyFilePath', 'endpoint', 'model', 'enableTailInjection', 'enableSubsystems',
   'enableSkills', 'enableMemories', 'enableSystemPromptPruning', 'executionMode', 'timeoutMs',
   'maxMemoryGuards', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
+  'projects',
 ]);
 type ConfigKey = keyof JevNavigatorConfig;
 type Layer = Partial<JevNavigatorConfig>;
@@ -70,7 +73,9 @@ function validateLayer(value: unknown, label: string, diagnostics: string[]): La
       continue;
     }
     const key = rawKey as ConfigKey;
-    const valid = key === 'executionMode'
+    const valid = key === 'projects'
+      ? (typeof rawValue === 'object' && rawValue !== null)
+      : key === 'executionMode'
       ? rawValue === 'auto' || rawValue === 'parallel' || rawValue === 'unified'
       : key === 'apiKey' || key === 'keyFilePath' || key === 'endpoint' || key === 'model'
         ? typeof rawValue === 'string' && rawValue.length > 0
@@ -124,19 +129,31 @@ export class JevConfigStore {
 
   private candidatePaths(base: string): string[] { return [`${base}.jsonc`, `${base}.json`]; }
 
-  private loadLayer(base: string, label: string): { layer: Layer; filePath: string | null } {
-    for (const candidate of this.candidatePaths(base)) {
-      if (!fs.existsSync(candidate)) continue;
-      const parsed = parseFile(candidate, label, this.diagnostics);
-      if (parsed) return { layer: parsed, filePath: candidate };
+  private loadLayer(bases: string | string[], label: string): { layer: Layer; filePath: string | null } {
+    const list = Array.isArray(bases) ? bases : [bases];
+    for (const base of list) {
+      for (const candidate of this.candidatePaths(base)) {
+        if (!fs.existsSync(candidate)) continue;
+        const parsed = parseFile(candidate, label, this.diagnostics);
+        if (parsed) return { layer: parsed, filePath: candidate };
+      }
     }
     return { layer: {}, filePath: null };
   }
 
   private loadConfig(overrides: JevNavigatorConfig): JevNavigatorConfig {
     this.diagnostics = [];
-    const global = this.loadLayer(path.join(this.homeDir, '.pi', 'agent', 'jev-config'), 'global');
-    const project = this.loadLayer(path.join(this.projectRoot, '.pi', 'jev-config'), 'project');
+    const globalBases = [
+      path.join(this.homeDir, '.pi', 'agent', 'jev-config'),
+      path.join(this.homeDir, '.pi', 'jev-config'),
+    ];
+    const projectBases = [
+      path.join(this.projectRoot, '.pi', 'jev-config'),
+      path.join(this.projectRoot, '.jev-config'),
+      path.join(this.projectRoot, 'jev-config'),
+    ];
+    const global = this.loadLayer(globalBases, 'global');
+    const project = this.loadLayer(projectBases, 'project');
     this.globalLayer = global.layer;
     this.projectLayer = Object.fromEntries(
       Object.entries(project.layer).filter(([key]) => !PROTECTED_PROJECT_KEYS.has(key as ConfigKey)),
@@ -146,8 +163,67 @@ export class JevConfigStore {
     for (const key of Object.keys(project.layer) as ConfigKey[]) {
       if (PROTECTED_PROJECT_KEYS.has(key)) this.diagnostics.push(`⚠️ Ignoring protected project config key: ${key}.`);
     }
+    const matchedProjectRule = this.resolveGlobalProjectRule(global.layer.projects);
     const trustedOverrides = validateLayer(overrides, 'constructor', this.diagnostics);
-    return { ...DEFAULT_CONFIG, ...this.globalLayer, ...this.projectLayer, ...trustedOverrides };
+    return {
+      ...DEFAULT_CONFIG,
+      ...this.globalLayer,
+      ...matchedProjectRule,
+      ...this.projectLayer,
+      ...trustedOverrides,
+    };
+  }
+
+  private normalizePathCandidate(targetPath: string): string {
+    const raw = targetPath.trim();
+    const resolved = raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')
+      ? path.resolve(this.homeDir, raw.replace(/^~[/\\]?/, ''))
+      : path.resolve(raw);
+    try {
+      return fs.realpathSync(resolved);
+    } catch {
+      return resolved;
+    }
+  }
+
+  private resolveGlobalProjectRule(projectsConfig: unknown): Layer {
+    if (!projectsConfig || typeof projectsConfig !== 'object') return {};
+    const gitCtx = resolveGitContext(this.projectRoot);
+    const realOrResolve = (p: string) => {
+      try { return fs.realpathSync(path.resolve(p)); } catch { return path.resolve(p); }
+    };
+    const resolvedProject = realOrResolve(this.projectRoot);
+    const resolvedMain = realOrResolve(gitCtx.mainRepoRoot);
+    const resolvedWorktree = realOrResolve(gitCtx.worktreeRoot);
+
+    const entries: Array<{ path: string; config: unknown }> = [];
+    if (Array.isArray(projectsConfig)) {
+      for (const item of projectsConfig) {
+        if (item && typeof item === 'object' && typeof (item as any).path === 'string') {
+          const { path: p, ...rest } = item as any;
+          entries.push({ path: p, config: rest });
+        }
+      }
+    } else {
+      for (const [p, cfg] of Object.entries(projectsConfig)) {
+        entries.push({ path: p, config: cfg });
+      }
+    }
+
+    for (const entry of entries) {
+      const normalized = this.normalizePathCandidate(entry.path);
+      if (
+        normalized === resolvedProject ||
+        normalized === resolvedMain ||
+        normalized === resolvedWorktree
+      ) {
+        const validated = validateLayer(entry.config, `projects[${entry.path}]`, this.diagnostics);
+        return Object.fromEntries(
+          Object.entries(validated).filter(([k]) => !PROTECTED_PROJECT_KEYS.has(k as ConfigKey))
+        );
+      }
+    }
+    return {};
   }
 
   public get(): JevNavigatorConfig { return { ...this.config }; }
@@ -158,9 +234,9 @@ export class JevConfigStore {
     for (const key of Object.keys(valid) as ConfigKey[]) this.explicitKeys.add(key);
   }
 
-  public toggle(feature: 'subsystems' | 'skills' | 'memories' | 'pruning' | 'mode'): { key: string; newValue: boolean | string } {
+  public toggle(feature: 'subsystems' | 'skills' | 'memories' | 'mode'): { key: string; newValue: boolean | string } {
     const mapping = {
-      subsystems: 'enableSubsystems', skills: 'enableSkills', memories: 'enableMemories', pruning: 'enableSystemPromptPruning',
+      subsystems: 'enableSubsystems', skills: 'enableSkills', memories: 'enableMemories',
     } as const;
     if (feature === 'mode') {
       const modes: ExecutionMode[] = ['auto', 'parallel', 'unified'];
@@ -201,7 +277,9 @@ export class JevConfigStore {
     for (const key of this.explicitKeys) {
       if (!PROTECTED_PROJECT_KEYS.has(key)) (values as Record<string, unknown>)[key] = this.config[key];
     }
-    const result = this.writeConfig(path.join(this.projectRoot, '.pi'), 'jev-config', values, this.projectConfigPath, true);
+    const targetDir = this.projectConfigPath ? path.dirname(this.projectConfigPath) : path.join(this.projectRoot, '.pi');
+    const baseName = this.projectConfigPath ? path.basename(this.projectConfigPath).replace(/\.(?:jsonc|json)$/, '') : 'jev-config';
+    const result = this.writeConfig(targetDir, baseName, values, this.projectConfigPath, true);
     this.projectConfigPath = result;
     return result;
   }

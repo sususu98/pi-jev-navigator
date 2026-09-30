@@ -3,6 +3,25 @@ import * as path from 'path';
 import * as os from 'os';
 import { CodeGraphExportOptions } from '../types.js';
 
+/**
+ * Safeguard: check whether the target path is the user home directory or a system root
+ */
+export function isSystemRootOrHome(targetPath: string, homeDir: string = os.homedir()): boolean {
+  const resolved = path.resolve(targetPath);
+  const home = path.resolve(homeDir);
+  const root = path.resolve('/');
+  const homeParent = path.dirname(home);
+  return (
+    resolved === home ||
+    resolved === root ||
+    resolved === homeParent ||
+    resolved === '/Users' ||
+    resolved === '/home' ||
+    resolved === '/root' ||
+    path.dirname(resolved) === resolved
+  );
+}
+
 export class CodeGraphExtractor {
   private defaultIgnoreDirs = new Set([
     '.git',
@@ -160,14 +179,7 @@ export class CodeGraphExtractor {
     const maxDepth = options.maxDepth ?? 8;
 
     // Home / System Root Guard: Never recursively crawl user home directory or system root!
-    const home = path.resolve(os.homedir());
-    if (
-      rootDir === home ||
-      rootDir === '/' ||
-      rootDir === '/Users' ||
-      rootDir === '/home' ||
-      rootDir === '/root'
-    ) {
+    if (isSystemRootOrHome(rootDir)) {
       return {
         dsl: '[~]\n',
         totalFiles: 0,

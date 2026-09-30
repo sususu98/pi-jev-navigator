@@ -11,7 +11,8 @@ export class JevPrompter {
     memories: MemoryGuard[] = [],
     _userPrompt: string = ''
   ): { questions: Record<string, JevQuestion>; dirCriteriaMap: Record<string, string> } {
-    const allDirs = Array.from(new Set(Array.from(trieDsl.matchAll(/^\[([^\]]+)\]/gm), (m) => m[1])));
+    const allDirs = Array.from(new Set(Array.from(trieDsl.matchAll(/^\[([^\]]+)\]/gm), (m) => m[1])))
+      .filter((dir) => dir !== '~');
     const dirCriteriaMap: Record<string, string> = Object.fromEntries(allDirs.map((dir, i) => [`dir_${i}`, dir]));
     const dirCriteria = { ...dirCriteriaMap, none_or_new: 'General / New Modules / No specific directory' };
     const skillCriteria = Object.fromEntries(skills.map((skill, i) => [`skill_${i}`, `${skill.name}: ${skill.description}`]));

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { JevNavigator } from '../src/index.ts';
+import { JevNavigator, TailInjector } from '../src/index.ts';
 import type { DispatchDecision } from '../src/types.ts';
 import { offlineTransport, responseFor } from './support.ts';
 
@@ -260,6 +260,65 @@ describe('JevNavigator integration', () => {
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
       fs.rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  it('disables file scanning and AST indexing on home/root directory while honoring fallback config for memories', async () => {
+    const home = tempDir('jev-home-');
+    try {
+      // 1. Write Hermes global memory file in home directory
+      const hermesDir = path.join(home, '.pi', 'agent', 'pi-hermes-memory');
+      fs.mkdirSync(hermesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(hermesDir, 'failures.md'),
+        '[correction] Always run tests before commit\nMust execute test runner\n<!-- project64=Z2xvYmFs last=2026-03-30 -->\n'
+      );
+
+      let receivedQuestions: any = null;
+      let receivedState: any = null;
+      const transport = (async (_url: any, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        receivedQuestions = body.questions;
+        receivedState = body.state;
+        const res = responseFor(body);
+        const memKeys = Object.keys(body.questions.q5_memory_guard?.criteria || {}).filter((k: string) => k !== 'none');
+        if (memKeys.length > 0) {
+          (res.answers.q5_memory_guard as any).choice = memKeys[0];
+          (res.answers.q5_memory_guard as any).probabilities = { [memKeys[0]]: 1 };
+        }
+        return Response.json(res);
+      }) as typeof fetch;
+
+      // Project root is the home directory itself
+      const nav = new JevNavigator(home, {
+        apiKey: 'FAKE',
+        enableSkills: false, // user/project overrides or fallback can disable skills
+        enableMemories: true, // fallback config keeps memories enabled
+      }, home, transport);
+
+      // Verify AST scanning is disabled on home directory
+      const graph = nav.getOrGenerateCodeGraph();
+      expect(graph.totalFiles).toBe(0);
+      expect(graph.dsl).toBe('[~]\n');
+      expect(graph.fromCache).toBe(false);
+
+      const decision = await nav.evaluatePrompt('please fix test', [], undefined, { skills: [] });
+      expect(decision).not.toBeNull();
+
+      // Subsystem indexing disabled on home root => no codebase_trie_map and no q1_target_subsystem
+      expect(receivedState.codebase_trie_map).toBeUndefined();
+      expect(receivedQuestions.q1_target_subsystem).toBeUndefined();
+
+      // Memories honored according to fallback config
+      expect(receivedQuestions.q5_memory_guard).toBeDefined();
+      expect(JSON.stringify(receivedQuestions.q5_memory_guard.criteria)).toContain('Always run tests before commit');
+
+      // Guidance formatting check: Tail injector should only inject memory, no subsystem
+      const guidance = new TailInjector().formatTailGuidance(decision!);
+      expect(guidance).not.toContain('Target Subsystem');
+      expect(guidance).toContain('Active Memory Guard');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });

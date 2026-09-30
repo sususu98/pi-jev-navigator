@@ -30,12 +30,13 @@ export class JevDualPipeline {
       const memories = config.enableMemories !== false ? inputs.memories : [];
       const dsl = config.enableSubsystems !== false ? inputs.dsl : '';
       const { questions, dirCriteriaMap } = this.prompter.buildQuestions(dsl, skills, inputs.safetyRules, memories, inputs.userPrompt);
-      if (config.enableSubsystems === false) delete questions.q1_target_subsystem;
+      const hasSubsystems = config.enableSubsystems !== false && Object.keys(dirCriteriaMap).length > 0;
+      if (!hasSubsystems) delete questions.q1_target_subsystem;
       if (!skills.length) delete questions.q2_active_skill;
       if (!memories.length) delete questions.q5_memory_guard;
       const state: JevState = {
         user_task: inputs.userPrompt,
-        ...(config.enableSubsystems !== false ? { codebase_trie_map: dsl } : {}),
+        ...(hasSubsystems ? { codebase_trie_map: dsl } : {}),
         safety_rules: inputs.safetyRules,
       };
 

@@ -135,4 +135,5 @@ export interface JevNavigatorConfig {
   ignoreDirs?: string[];
   maxFilesIndexed?: number;
   maxScanDepth?: number;
+  projects?: Record<string, Partial<Omit<JevNavigatorConfig, 'projects'>>> | Array<Partial<Omit<JevNavigatorConfig, 'projects'>> & { path: string }>;
 }

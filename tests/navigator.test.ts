@@ -182,7 +182,7 @@ describe('pi-jev-navigator core test suite', () => {
     expect(store.getRawFile('test.dsl')).toBeNull();
   });
 
-  it('should prune unactivated skills from System Prompt', () => {
+  it('should keep System Prompt 100% static to preserve LCP prefix cache', () => {
     const injector = new TailInjector();
     const mockSystemPrompt = `You are an expert coding assistant...
 
@@ -202,18 +202,13 @@ The following skills provide specialized instructions for specific tasks.
 
 <cwd>/Users/sususu</cwd>`;
 
-    // Case 1: No skill activated
+    // Case 1: No skill activated -> System Prompt remains 100% untouched
     const prunedEmpty = injector.pruneSystemPromptSkills(mockSystemPrompt, undefined);
-    expect(prunedEmpty).not.toContain('tavily-search');
-    expect(prunedEmpty).not.toContain('local-cpa');
-    expect(prunedEmpty).toContain('Skill catalog routed');
-    expect(prunedEmpty).toContain('<cwd>/Users/sususu</cwd>');
+    expect(prunedEmpty).toBe(mockSystemPrompt);
 
-    // Case 2: Specific skill activated (local-cpa)
+    // Case 2: Specific skill activated -> System Prompt remains 100% untouched
     const prunedSingle = injector.pruneSystemPromptSkills(mockSystemPrompt, 'local-cpa');
-    expect(prunedSingle).toContain('local-cpa');
-    expect(prunedSingle).not.toContain('tavily-search');
-    expect(prunedSingle).toContain('<available_skills>');
+    expect(prunedSingle).toBe(mockSystemPrompt);
   });
 
   it('should format active memory guard into tail guidance', () => {

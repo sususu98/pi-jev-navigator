@@ -45,12 +45,12 @@ function harness(options: { cfg?: JevNavigatorConfig; hasKey?: boolean; evaluate
 }
 
  describe('request-local navigation transform', () => {
-  it('only changes the dedicated system skills section and appends user guidance', () => {
+  it('preserves system sections 100% untouched and appends guidance to user message', () => {
     const original = messages();
     const snapshot = structuredClone(original);
     const output = transformNavigationContext(original as any, decision(), config);
     expect(original).toEqual(snapshot);
-    expect(output[0].sections?.skills).not.toBe(catalog);
+    expect(output[0].sections?.skills).toBe(catalog);
     expect((output[0] as any).sections.instructions).toBe('Preserve ' + catalog);
     expect((output[0] as any).toolsAdded).toEqual(snapshot[0].toolsAdded);
     expect(output[2]).toEqual(snapshot[2]);
@@ -170,8 +170,8 @@ describe('Pi lifecycle integration', () => {
     expect(text).toContain('[REDACTED]');
   });
 
-  it('prunes systemPromptOptions.skills natively in before_agent_start', async () => {
-    // 1. When activated skill matches
+  it('preserves systemPromptOptions.skills 100% static in before_agent_start to protect LCP cache', async () => {
+    // 1. When activated skill matches -> systemPromptOptions.skills must remain untouched
     const h1 = harness({ evaluate: async () => decision('skill-a') });
     const ev1: any = {
       prompt: 'task',
@@ -183,9 +183,9 @@ describe('Pi lifecycle integration', () => {
       },
     };
     await h1.emit('before_agent_start', ev1, context());
-    expect(ev1.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a']);
+    expect(ev1.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a', 'skill-b']);
 
-    // 2. When no skill is activated
+    // 2. When no skill is activated -> systemPromptOptions.skills must remain untouched
     const h2 = harness({ evaluate: async () => ({ ...decision(), activatedSkill: undefined }) });
     const ev2: any = {
       prompt: 'task',
@@ -197,6 +197,6 @@ describe('Pi lifecycle integration', () => {
       },
     };
     await h2.emit('before_agent_start', ev2, context());
-    expect(ev2.systemPromptOptions.skills).toEqual([]);
+    expect(ev2.systemPromptOptions.skills.map((s: any) => s.name)).toEqual(['skill-a', 'skill-b']);
   });
 });

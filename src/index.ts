@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { CodeGraphExtractor } from './graph/codegraph.js';
+import { CodeGraphExtractor, isSystemRootOrHome } from './graph/codegraph.js';
 import { GitNexusAdapter } from './graph/gitnexus-adapter.js';
 import { SkillCollector } from './skills/collector.js';
 import { MemoryCollector } from './memory/collector.js';
@@ -49,6 +49,15 @@ export class JevNavigator {
   public getOrGenerateCodeGraph(forceRefresh: boolean = false): {
     dsl: string; totalFiles: number; totalSymbols: number; estimatedTokens: number; fromCache: boolean;
   } {
+    if (isSystemRootOrHome(this.projectRoot, this.homeDir)) {
+      return {
+        dsl: '[~]\n',
+        totalFiles: 0,
+        totalSymbols: 0,
+        estimatedTokens: 0,
+        fromCache: false,
+      };
+    }
     const cachedDSL = !forceRefresh ? this.ttlStore.getRawFile('cpa-macro-map.dsl') : null;
     if (cachedDSL !== null) {
       const records = cachedDSL.split('\n').filter((line) => /\.(?:go|tsx?|jsx?|rs|py)->/.test(line));
@@ -150,9 +159,8 @@ export class JevNavigator {
     }, sessionMeta);
   }
 
-  public pruneSystemPrompt(systemPrompt: string, activatedSkill?: string): string {
-    return this.getConfig().enableSystemPromptPruning === false
-      ? systemPrompt : this.injector.pruneSystemPromptSkills(systemPrompt, activatedSkill);
+  public pruneSystemPrompt(systemPrompt: string, _activatedSkill?: string): string {
+    return systemPrompt;
   }
 
   public async processUserPrompt(userPrompt: string, safetyRules: string[] = []): Promise<{ enrichedPrompt: string; decision: DispatchDecision | null }> {
@@ -204,7 +212,7 @@ export default function registerJevNavigatorExtension(
         `• Project Root: ${status.projectRoot}`,
         `• Git Branch: ${status.branch} | Worktree: ${status.isWorktree} | Main: ${status.mainRepoRoot}`,
         `• Execution Mode: ${config.executionMode} (Timeout: ${config.timeoutMs}ms)`,
-        `• Subsystems: ${config.enableSubsystems} | Skills: ${config.enableSkills} | Memories: ${config.enableMemories} | Pruning: ${config.enableSystemPromptPruning}`,
+        `• Subsystems: ${config.enableSubsystems} | Skills: ${config.enableSkills} | Memories: ${config.enableMemories}`,
         `• API Key Bound: ${status.apiKeyConfigured ? 'YES' : 'NO — set TYPESAFE_API_KEY or ~/.pi/agent/secrets/jev.key'}`,
         `• Codebase: ${status.codebaseFilesIndexed} files (~${status.estimatedTokens} estimated tokens)`,
         `• Catalogs: ${status.skillsCollected} standalone skills | ${status.memoriesCollected} memory guards`,
@@ -221,14 +229,14 @@ export default function registerJevNavigatorExtension(
     },
   });
   pi.registerCommand('jev-toggle', {
-    description: 'Toggle feature: /jev-toggle <skills|mem|subsystems|pruning|mode>',
+    description: 'Toggle feature: /jev-toggle <skills|mem|subsystems|mode>',
     handler: async (args, ctx) => {
-      const aliases: Record<string, 'skills' | 'memories' | 'subsystems' | 'pruning' | 'mode'> = {
+      const aliases: Record<string, 'skills' | 'memories' | 'subsystems' | 'mode'> = {
         skills: 'skills', skill: 'skills', mem: 'memories', memory: 'memories', memories: 'memories',
-        subsystems: 'subsystems', subsystem: 'subsystems', dirs: 'subsystems', pruning: 'pruning', prune: 'pruning', mode: 'mode',
+        subsystems: 'subsystems', subsystem: 'subsystems', dirs: 'subsystems', mode: 'mode',
       };
       const feature = aliases[args.trim().toLowerCase()];
-      if (!feature) { ctx.ui.notify('Usage: /jev-toggle <skills | mem | subsystems | pruning | mode>', 'warning'); return; }
+      if (!feature) { ctx.ui.notify('Usage: /jev-toggle <skills | mem | subsystems | mode>', 'warning'); return; }
       const store = getNavigator(ctx.cwd).getConfigStore();
       const result = store.toggle(feature);
       const savedPath = store.saveProjectConfig();
