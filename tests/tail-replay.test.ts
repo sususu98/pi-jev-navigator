@@ -660,7 +660,7 @@ describe('Tail Replay & Prompt Cache Invariance (jev-navigation-tail-v1)', () =>
     expect(customEntries).toHaveLength(1);
 
     // Ensure guidance header appears exactly once
-    const matches = firstText.match(/🎯 \[System One Navigation Context/g);
+    const matches = firstText.match(/\[System One Navigation Context/g);
     expect(matches).toHaveLength(1);
   });
 

@@ -105,7 +105,10 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
         for (const guard of decision.activatedMemoryGuards ?? (decision.activatedMemoryGuard ? [decision.activatedMemoryGuard] : [])) {
           parts.push(`Guard: [${guard.category}] ${guard.title.slice(0, 30)}`);
         }
-        ctx.ui.notify(`⚡ Jev Routed: ${parts.join(' | ')} | ${formatRoutingStats(decision)}`, 'info');
+        if (decision.memoryRetrieval) {
+          parts.push(`Memory: ${formatMemoryRetrieval(decision.memoryRetrieval)}`);
+        }
+        ctx.ui.notify(`Jev Routed: ${parts.join(' | ')} | ${formatRoutingStats(decision)}`, 'info');
       }
       // Do not return systemPrompt: it would persist a decision-dependent leading prompt.
     } catch {

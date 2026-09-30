@@ -99,8 +99,8 @@ describe('pi-jev-navigator core test suite', () => {
     expect(guidance).toContain('internal/signature, internal/translator');
     expect(guidance).toContain('cpa-signature-catalog-and-collection');
     expect(guidance).toContain('rule_no_translator; rule_fast_compile');
-    expect(guidance).toContain('Architecture Risk Level: 2 (⚠️ High)');
-    expect(guidance).toContain('520.5ms');
+    expect(guidance).toContain('Architecture Risk Level: 2 (High)');
+    expect(guidance).not.toContain('520.5ms');
   });
 
   it('should map current question IDs, subsystem probabilities and actual safety text', () => {
@@ -232,10 +232,10 @@ The following skills provide specialized instructions for specific tasks.
       inputTokens: 25000,
     });
 
-    expect(guidance).toContain('🎯 [System One Navigation Context');
-    expect(guidance).toContain('• 🧠 Active Memory Guard:');
-    expect(guidance).toContain('⚠️ [correction] 当用户要求看配置时直接读取配置文件本身');
-    expect(guidance).toContain('• 📁 Target Subsystem: `internal/config`');
+    expect(guidance).toContain('[System One Navigation Context');
+    expect(guidance).toContain('• Active Memory Guard:');
+    expect(guidance).toContain('[correction] 当用户要求看配置时直接读取配置文件本身');
+    expect(guidance).toContain('• Target Subsystem: `internal/config`');
   });
 
   it('should support live feature toggling via JevConfigStore', () => {

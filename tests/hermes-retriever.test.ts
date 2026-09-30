@@ -152,8 +152,8 @@ describe('read-only Hermes retrieval', () => {
     expect(r.decision?.memoryRetrieval?.eligible).toBe(1801);
     expect(r.decision?.memoryRetrieval?.candidates).toBe(1);
     expect(r.decision?.memoryRetrieval?.selected).toBe(1);
-    expect(r.enrichedPrompt).toContain('1,801 eligible → 1 candidates → 1 selected');
-    expect(r.enrichedPrompt).toContain('Retrieval:');
+    expect(formatMemoryRetrieval(r.decision!.memoryRetrieval!)).toContain('1,801 eligible → 1 candidates → 1 selected');
+    expect(formatMemoryRetrieval(r.decision!.memoryRetrieval!)).toContain('Retrieval:');
     expect(formatMemoryRetrieval(r.decision!.memoryRetrieval!)).toContain('estimated');
     expect(formatTokens(403051)).toBe('403.1K'); expect(formatTokens(1419609)).toBe('1.42M');
   });
