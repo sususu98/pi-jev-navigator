@@ -35,7 +35,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     return false;
   };
 
-  type Run = { decision?: DispatchDecision; guidance?: string; userKey?: string; userEntryId?: string };
+  type Run = { decision?: DispatchDecision; guidance?: string; userKey?: string; userEntryId?: string; guidanceDisplayed?: boolean; telemetry?: string };
   const runs = new Map<string, Run>();
   const ledger = new NavigationTailLedger(pi);
   const keyFor = (ctx: ExtensionContext) => JSON.stringify([
@@ -95,17 +95,10 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
         event.systemPromptOptions.skills = [];
       }
 
-      if (ctx.hasUI) {
-        const parts = [`Subsystem: ${decision.targetSubsystems?.join(', ') || 'General'}`];
-        if (decision.activatedSkill) parts.push(`Skill: ${decision.activatedSkill}`);
-        for (const guard of decision.activatedMemoryGuards ?? (decision.activatedMemoryGuard ? [decision.activatedMemoryGuard] : [])) {
-          parts.push(`Guard: [${guard.category}] ${guard.title.slice(0, 30)}`);
-        }
-        if (decision.memoryRetrieval) {
-          parts.push(`Memory: ${formatMemoryRetrieval(decision.memoryRetrieval)}`);
-        }
-        ctx.ui.notify(`Jev Routed: ${parts.join(' | ')} | ${formatRoutingStats(decision)}`, 'info');
-      }
+      // Human-only telemetry is never part of the frozen model tail.
+      const stats = [formatRoutingStats(decision)];
+      if (decision.memoryRetrieval) stats.push(formatMemoryRetrieval(decision.memoryRetrieval));
+      run.telemetry = `Jev Telemetry: ${stats.join('\n')}`;
       // Do not return systemPrompt: it would persist a decision-dependent leading prompt.
     } catch {
       run.decision = undefined;
@@ -143,6 +136,29 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
       };
     }
     const messages = ledger.replay(event.messages, ctx, key, current);
+    if (ctx.hasUI && current && run && !run.guidanceDisplayed) {
+      const original = event.messages[current.index];
+      const injected = messages[current.index];
+      let tail = '';
+      if (original.role === 'user' && injected.role === 'user') {
+        if (typeof original.content === 'string' && typeof injected.content === 'string'
+          && injected.content.startsWith(original.content)) {
+          tail = injected.content.slice(original.content.length);
+        } else if (Array.isArray(original.content) && Array.isArray(injected.content)) {
+          tail = injected.content.slice(original.content.length)
+            .filter(part => part.type === 'text').map(part => part.text).join('');
+        }
+      }
+      if (tail) {
+        // Display exactly the bytes sent to the model, including full SOP paths and
+        // memory constraints. Never add a second model message or rewrite old tails.
+        run.guidanceDisplayed = true;
+        // Pi coalesces consecutive info notifications. Send one display with two
+        // distinct blocks so neither the navigation body nor telemetry is overwritten.
+        try { ctx.ui.notify(`${tail}\n\n${run.telemetry ?? ''}`, 'info'); }
+        catch { /* UI failure must not affect wire history. */ }
+      }
+    }
     if (messages !== event.messages || run?.guidance) return { messages };
   });
 

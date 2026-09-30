@@ -3,6 +3,7 @@ import register, { type JevNavigator } from '../src/index.ts';
 import { transformNavigationContext } from '../src/injector/context-transform.ts';
 import type { DispatchDecision, JevNavigatorConfig } from '../src/types.ts';
 import { redactSensitive } from '../src/config/redact.ts';
+import { TailInjector } from '../src/injector/tail-injector.ts';
 
 const tag = (name: string, content: string) => '<' + name + '>' + content + '</' + name + '>';
 const catalog = tag('skills', tag('available_skills', tag('skill', tag('name', 'fixture') + tag('location', '/fixture/SKILL.md'))));
@@ -173,6 +174,7 @@ describe('Pi lifecycle integration', () => {
     }) });
     const ctx = context(); ctx.hasUI = true;
     await h.emit('before_agent_start', { prompt: 'task' }, ctx);
+    await h.emit('context_with_system', { messages: messages() }, ctx);
     await h.commands['jev-eval'].handler('task', ctx);
     const telemetryCalls = ctx.ui.notify.mock.calls.map((c: any[]) => c[0]).filter((text: string) => text.includes('Track A'));
     for (const text of telemetryCalls) {
@@ -182,6 +184,81 @@ describe('Pi lifecycle integration', () => {
       expect(text).toContain('aggregate, 2 requests');
     }
     expect(telemetryCalls).toHaveLength(2);
+  });
+
+  it('displays the exact injected tail once, with full memory and SOP paths, and separate telemetry', async () => {
+    const routed: DispatchDecision = {
+      ...decision(), riskScore: 0.62, inputTokens: 8500,
+      activatedMemoryGuards: [{
+        id: 'guard', category: 'correction', title: 'A title that must not replace the actual constraint',
+        summary: 'Complete constraint beyond thirty characters.\nSecond line must also be visible.', rule: 'full rule',
+      }],
+      memoryRetrieval: {
+        source: 'hermes-sqlite', status: 'ready', eligible: 553, retrieved: 5, candidates: 5, selected: 1,
+        latencyMs: 46, estimatedTokens: 1500, queries: 2, budgetLimited: false,
+      },
+    };
+    const h = harness({ evaluate: async () => routed });
+    const ctx = context(); ctx.hasUI = true;
+    await h.emit('before_agent_start', { prompt: 'task' }, ctx);
+    expect(ctx.ui.notify.mock.calls).toHaveLength(0);
+    const original = messages();
+    const result = await h.emit('context_with_system', { messages: original }, ctx);
+    const modelTail = result.messages[1].content.slice(original[1].content.length);
+    expect(modelTail).toBe(new TailInjector().formatTailGuidance(routed));
+    const [display, level] = ctx.ui.notify.mock.calls[0];
+    expect(level).toBe('info');
+    expect(display.slice(0, modelTail.length)).toBe(modelTail);
+    const telemetry = display.slice(modelTail.length);
+    expect(telemetry).toStartWith('\n\nJev Telemetry:');
+    expect(telemetry).toContain('553 eligible → 5 candidates → 1 selected');
+    expect(telemetry).not.toContain('Memory: Memory:');
+    expect(telemetry).not.toContain('Guard:');
+    expect(modelTail).toContain('/skills/fixture/SKILL.md');
+    expect(modelTail).toContain(routed.activatedMemoryGuards![0].summary);
+    expect(modelTail).not.toContain('eligible');
+    expect(modelTail).not.toContain('Input Tokens');
+    await h.emit('context_with_system', { messages: original }, ctx);
+    await h.emit('context_with_system', { messages: result.messages }, ctx);
+    expect(ctx.ui.notify.mock.calls).toHaveLength(1);
+    expect(original).toEqual(messages());
+  });
+
+  it('displays multimodal tails identically and keeps UI failures out of model context', async () => {
+    const h = harness(); const ctx = context(); ctx.hasUI = true;
+    await h.emit('before_agent_start', { prompt: 'image task' }, ctx);
+    const original = messages();
+    original[1].content = [{ type: 'image', data: 'fixture', mimeType: 'image/png' }, { type: 'text', text: 'image task' }];
+    const result = await h.emit('context_with_system', { messages: original }, ctx);
+    const modelTail = result.messages[1].content[2].text;
+    expect(ctx.ui.notify.mock.calls[0][0].slice(0, modelTail.length)).toBe(modelTail);
+    expect(result.messages[1].content.slice(0, 2)).toEqual(original[1].content);
+
+    const broken = harness(); const brokenCtx = context(); brokenCtx.hasUI = true;
+    await broken.emit('before_agent_start', { prompt: 'task' }, brokenCtx);
+    brokenCtx.ui.notify = mock(() => { throw new Error('UI unavailable'); });
+    const output = await broken.emit('context_with_system', { messages: messages() }, brokenCtx);
+    expect(output.messages[1].content).toContain('/skills/fixture/SKILL.md');
+    expect(await broken.emit('context_with_system', { messages: messages() }, brokenCtx)).toEqual(output);
+    expect(brokenCtx.ui.notify.mock.calls).toHaveLength(1);
+  });
+
+  it('does not display nonexistent, bypassed, cancelled, or steering tails', async () => {
+    for (const options of [{ hasKey: false }, { evaluate: async () => null }, { evaluate: async () => ({ bypassed: true }) }]) {
+      const h = harness(options); const ctx = context(); ctx.hasUI = true;
+      await h.emit('before_agent_start', { prompt: 'task' }, ctx);
+      await h.emit('context_with_system', { messages: messages() }, ctx);
+      expect(ctx.ui.notify.mock.calls).toHaveLength(0);
+    }
+    const h = harness(); const ctx = context(); ctx.hasUI = true;
+    await h.emit('before_agent_start', { prompt: 'task' }, ctx);
+    await h.emit('message_end', { message: messages()[1] }, ctx);
+    const steered = messages(); steered.push({ role: 'user', content: 'steering', timestamp: 10 });
+    await h.emit('context_with_system', { messages: steered }, ctx);
+    expect(ctx.ui.notify.mock.calls).toHaveLength(0); // no injected tail, no card
+    ctx.signal = AbortSignal.abort();
+    await h.emit('context_with_system', { messages: messages() }, ctx);
+    expect(ctx.ui.notify.mock.calls).toHaveLength(0);
   });
 
   it('redacts the API key from the config command', async () => {
