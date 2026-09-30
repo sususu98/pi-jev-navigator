@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as jsonc from 'jsonc-parser/lib/esm/main.js';
 import { JevNavigatorConfig, ExecutionMode } from '../types.js';
 import { resolveGitContext } from '../graph/git.js';
+import { isProtectedConfigPath, writeSafeConfig } from './safe-file.js';
 
 export const { applyEdits, modify, parse } = jsonc;
 export type ParseError = jsonc.ParseError;
@@ -133,11 +134,28 @@ export class JevConfigStore {
 
   private candidatePaths(base: string): string[] { return [`${base}.jsonc`, `${base}.json`]; }
 
+  private protectedGlobalPaths(): string[] {
+    const home = this.homeDir;
+    const keyFiles = [this.globalLayer.keyFilePath, this.config?.keyFilePath]
+      .filter((file): file is string => !!file)
+      .map((file) => file.startsWith('~/') ? path.join(home, file.slice(2)) : path.resolve(file));
+    return [
+      ...this.candidatePaths(path.join(home, '.pi', 'agent', 'jev-config')),
+      ...this.candidatePaths(path.join(home, '.pi', 'jev-config')),
+      path.join(home, '.pi', 'agent', 'secrets', 'jev.key'), path.join(home, '.pi', 'secrets', 'jev.key'),
+      ...keyFiles,
+    ];
+  }
+
   private loadLayer(bases: string | string[], label: string): { layer: Layer; filePath: string | null } {
     const list = Array.isArray(bases) ? bases : [bases];
     for (const base of list) {
       for (const candidate of this.candidatePaths(base)) {
         if (!fs.existsSync(candidate)) continue;
+        if (label === 'project' && isProtectedConfigPath(candidate, this.protectedGlobalPaths())) {
+          this.diagnostics.push('⚠️ Ignoring protected global file as a project config.');
+          continue;
+        }
         const parsed = parseFile(candidate, label, this.diagnostics);
         if (parsed) return { layer: parsed, filePath: candidate };
       }
@@ -157,8 +175,8 @@ export class JevConfigStore {
       path.join(this.projectRoot, 'jev-config'),
     ];
     const global = this.loadLayer(globalBases, 'global');
-    const project = this.loadLayer(projectBases, 'project');
     this.globalLayer = global.layer;
+    const project = this.loadLayer(projectBases, 'project');
     this.projectLayer = Object.fromEntries(
       Object.entries(project.layer).filter(([key]) => !PROTECTED_PROJECT_KEYS.has(key as ConfigKey)),
     );
@@ -255,24 +273,20 @@ export class JevConfigStore {
   }
 
   private writeConfig(baseDir: string, baseName: string, values: Layer, existingPath: string | null, removeProtected: boolean): string {
-    fs.mkdirSync(baseDir, { recursive: true });
     const configPath = existingPath || path.join(baseDir, `${baseName}.json`);
-    let output: string;
-    if (existingPath && fs.existsSync(existingPath)) {
-      output = fs.readFileSync(existingPath, 'utf8');
-      const formattingOptions = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
-      if (removeProtected) {
-        for (const key of PROTECTED_PROJECT_KEYS) output = applyEdits(output, modify(output, [key], undefined, formattingOptions));
-      }
-      for (const [key, value] of Object.entries(values)) {
-        output = applyEdits(output, modify(output, [key], value, formattingOptions));
-      }
-      if (!output.endsWith('\n')) output += '\n';
-    } else {
-      output = JSON.stringify(values, null, 2) + '\n';
-    }
-    fs.writeFileSync(configPath, output, { encoding: 'utf8', mode: 0o600 });
-    fs.chmodSync(configPath, 0o600);
+    writeSafeConfig(configPath, removeProtected ? this.projectRoot : this.homeDir,
+      removeProtected ? this.protectedGlobalPaths() : [], (existing) => {
+        if (!existingPath || existing === null) return JSON.stringify(values, null, 2) + '\n';
+        let output = existing;
+        const formattingOptions = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+        if (removeProtected) {
+          for (const key of PROTECTED_PROJECT_KEYS) output = applyEdits(output, modify(output, [key], undefined, formattingOptions));
+        }
+        for (const [key, value] of Object.entries(values)) {
+          output = applyEdits(output, modify(output, [key], value, formattingOptions));
+        }
+        return output.endsWith('\n') ? output : output + '\n';
+      });
     return configPath;
   }
 
@@ -281,8 +295,10 @@ export class JevConfigStore {
     for (const key of this.explicitKeys) {
       if (!PROTECTED_PROJECT_KEYS.has(key)) (values as Record<string, unknown>)[key] = this.config[key];
     }
-    const targetDir = this.projectConfigPath ? path.dirname(this.projectConfigPath) : path.join(this.projectRoot, '.pi');
-    const baseName = this.projectConfigPath ? path.basename(this.projectConfigPath).replace(/\.(?:jsonc|json)$/, '') : 'jev-config';
+    const targetDir = this.projectConfigPath ? path.dirname(this.projectConfigPath)
+      : this.normalizePathCandidate(this.projectRoot) === this.normalizePathCandidate(this.homeDir) ? this.projectRoot : path.join(this.projectRoot, '.pi');
+    const isHome = this.normalizePathCandidate(this.projectRoot) === this.normalizePathCandidate(this.homeDir);
+    const baseName = this.projectConfigPath ? path.basename(this.projectConfigPath).replace(/\.(?:jsonc|json)$/, '') : isHome ? '.jev-config' : 'jev-config';
     const result = this.writeConfig(targetDir, baseName, values, this.projectConfigPath, true);
     this.projectConfigPath = result;
     return result;

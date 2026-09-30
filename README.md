@@ -98,7 +98,8 @@ Project-local secret-file auto-discovery is intentionally disabled. `/jev-config
 - Global: `~/.pi/agent/jev-config.jsonc` (or `.json`).
 - Project overrides: `<cwd>/.pi/jev-config.jsonc` (or `.json`).
 - JSONC supports comments and trailing commas without modifying string values.
-- Saves update the active file, preserve JSONC comments, write only the appropriate layer/explicit updates, and use `0600` permissions.
+- Saves preserve JSONC comments, write only the appropriate layer/explicit updates, and atomically replace files using exclusive no-follow staging files with `0600` permissions. Linked files (including hard links), linked parent directories, out-of-root destinations and protected global/key files are refused for project saves; directory identities are checked again before replacement.
+- Home-directory project preferences default to `~/.jev-config.json`, never the legacy global `~/.pi/jev-config.json` fallback.
 
 ```jsonc
 {
