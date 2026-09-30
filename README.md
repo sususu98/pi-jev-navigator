@@ -5,13 +5,13 @@ Context routing for Pi Coding Agent using TypeSafe Jev: code directories, SOP sk
 ## Behavior and safety boundaries
 
 - **Request-local navigation:** selected subsystems, full skill paths and memory rules are appended to the latest user message sent to the model. Original persisted messages are never rewritten. Frozen navigation tails are saved as non-context custom session entries and replayed on their original user messages.
-- **Scoped pruning:** after a successful decision, only system skill sections are replaced with a stable catalog placeholder. User messages, tool results, tool schemas and tool-call arguments are never searched/replaced. There is no provider-payload mutation hook.
+- **System prompt purity:** the Leading System Prompt remains 100% bit-for-bit static across the entire session to preserve upstream prefix cache. When Jev skill routing is active (`enableSkills: true`), Pi's 56KB+ native skill catalog is permanently omitted from the system prompt, keeping it lean, static, and turn-invariant.
 - **Whole-run lifetime:** guidance survives tool batches, retries and recovery until Pi's `agent_settled` event. Sessions are isolated and superseded decisions are discarded.
 - **Fail-open:** missing credentials, cancellation, invalid responses and request failures leave native context unchanged. A failed decision is not interpreted as “select no skills”.
-- **Independent controls:** disabling pruning keeps the native catalog while still adding guidance. Disabling skills keeps native skills and disables Jev skill selection. Disabling tail injection disables automatic routing and pruning; `/jev-eval` remains an explicit diagnostic command.
+- **Independent controls:** disabling skills keeps native skills and disables Jev skill selection. Disabling tail injection disables automatic routing; `/jev-eval` remains an explicit diagnostic command.
 - **Credential boundary:** only trusted global configuration, environment variables, or explicit library-constructor options can configure credentials and endpoints. Project `endpoint`, `apiKey` and `keyFilePath` are ignored with diagnostics. HTTP redirects are rejected.
 
-The extension does not guarantee provider prefix-cache hits. Successful routed requests use a decision-independent system catalog placeholder, but fail-open requests restore native context, and other extensions/providers may also change prompts.
+The extension maximizes upstream prefix-cache hits by preserving a strictly static system prompt and bit-for-bit replaying historical navigation tails. External factors such as other mutating extensions, model changes, and upstream server-side eviction may still affect cache independently.
 
 ## Pipeline
 
@@ -125,7 +125,6 @@ Project-local secret-file auto-discovery is intentionally disabled. `/jev-config
   "enableSubsystems": true,
   "enableSkills": true,
   "enableMemories": true,
-  "enableSystemPromptPruning": false, // compatibility option; prompts are never pruned
 
   "executionMode": "auto", // auto | parallel | unified
   "timeoutMs": 1500,
