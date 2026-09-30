@@ -91,7 +91,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
       // of skill catalog into system instructions. System prompt stays 100% bit-for-bit static
       // across all turns (even when skills are activated), preserving LCP cache permanently.
       // Activated skills are exclusively routed via user prompt tail navigation.
-      if (config.enableSystemPromptPruning !== false && config.enableSkills !== false && event.systemPromptOptions?.skills) {
+      if (config.enableSkills !== false && event.systemPromptOptions?.skills) {
         event.systemPromptOptions.skills = [];
       }
 

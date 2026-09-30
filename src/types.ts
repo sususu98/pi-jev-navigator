@@ -141,7 +141,6 @@ export interface JevNavigatorConfig {
   enableSubsystems?: boolean;
   enableSkills?: boolean;
   enableMemories?: boolean;
-  enableSystemPromptPruning?: boolean;
   executionMode?: ExecutionMode;
   timeoutMs?: number;
   /** @deprecated Use memoryCandidateLimit for retrieval and maxInjectedMemoryGuards for output. */

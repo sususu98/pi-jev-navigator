@@ -198,7 +198,6 @@ export function createTailReplayHarness(options: TailReplayHarnessOptions = {}) 
 
   const defaultCfg: JevNavigatorConfig = {
     enableTailInjection: true,
-    enableSystemPromptPruning: true,
     enableSkills: true,
   };
 

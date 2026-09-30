@@ -6,7 +6,7 @@ import { redactSensitive } from '../src/config/redact.ts';
 
 const tag = (name: string, content: string) => '<' + name + '>' + content + '</' + name + '>';
 const catalog = tag('skills', tag('available_skills', tag('skill', tag('name', 'fixture') + tag('location', '/fixture/SKILL.md'))));
-const config: JevNavigatorConfig = { enableTailInjection: true, enableSystemPromptPruning: true, enableSkills: true };
+const config: JevNavigatorConfig = { enableTailInjection: true, enableSkills: true };
 const decision = (name = 'fixture'): DispatchDecision => ({
   targetSubsystems: [name], activatedSkill: name, activatedSkillPath: `/skills/${name}/SKILL.md`, latencyMs: 1,
 });
@@ -81,12 +81,12 @@ function harness(options: { cfg?: JevNavigatorConfig; hasKey?: boolean; evaluate
     expect(transformNavigationContext(output, decision(), config)).toEqual(output);
   });
 
-  it('preserves native context on failure, disabled tail, disabled pruning or disabled skills', () => {
+  it('preserves native context on failure, disabled tail or disabled skills', () => {
     const original = messages();
     expect(transformNavigationContext(original as any, null, config)).toBe(original);
     expect(transformNavigationContext(original as any, { bypassed: true }, config)).toBe(original);
     expect(transformNavigationContext(original as any, decision(), { ...config, enableTailInjection: false })).toBe(original);
-    for (const cfg of [{ ...config, enableSystemPromptPruning: false }, { ...config, enableSkills: false }]) {
+    for (const cfg of [{ ...config, enableSkills: false }]) {
       const output = transformNavigationContext(original as any, decision(), cfg);
       expect(output[0]).toEqual(original[0]);
       expect((output[1] as any).content).toContain('System One Navigation Context');
@@ -222,8 +222,8 @@ describe('Pi lifecycle integration', () => {
     await h2.emit('before_agent_start', ev2, context());
     expect(ev2.systemPromptOptions.skills).toEqual([]);
 
-    // 3. When pruning disabled via config -> skills preserved untouched
-    const h3 = harness({ cfg: { enableSystemPromptPruning: false }, evaluate: async () => decision('skill-a') });
+    // 3. When skills disabled via config (enableSkills: false) -> skills preserved untouched
+    const h3 = harness({ cfg: { enableSkills: false }, evaluate: async () => decision('skill-a') });
     const ev3: any = {
       prompt: 'task',
       systemPromptOptions: {

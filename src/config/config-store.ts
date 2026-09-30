@@ -21,7 +21,6 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   enableSubsystems: true,
   enableSkills: true,
   enableMemories: true,
-  enableSystemPromptPruning: true,
   executionMode: 'auto',
   timeoutMs: 1500,
   maxMemoryGuards: 80, // legacy configuration only; never a routing candidate cutoff
@@ -45,7 +44,7 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
 const PROTECTED_PROJECT_KEYS = new Set<keyof JevNavigatorConfig>(['endpoint', 'apiKey', 'keyFilePath']);
 const CONFIG_KEYS = new Set<keyof JevNavigatorConfig>([
   'apiKey', 'keyFilePath', 'endpoint', 'model', 'enableTailInjection', 'enableSubsystems',
-  'enableSkills', 'enableMemories', 'enableSystemPromptPruning', 'executionMode', 'timeoutMs',
+  'enableSkills', 'enableMemories', 'executionMode', 'timeoutMs',
   'maxMemoryGuards', 'maxInjectedMemoryGuards', 'memoryCandidateLimit', 'memoryCandidateTokens', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
   'projects',
 ]);
@@ -84,7 +83,7 @@ function validateLayer(value: unknown, label: string, diagnostics: string[]): La
       ? rawValue === 'auto' || rawValue === 'parallel' || rawValue === 'unified'
       : key === 'apiKey' || key === 'keyFilePath' || key === 'endpoint' || key === 'model'
         ? typeof rawValue === 'string' && rawValue.length > 0
-        : ['enableTailInjection', 'enableSubsystems', 'enableSkills', 'enableMemories', 'enableSystemPromptPruning', 'logDecisions'].includes(key)
+        : ['enableTailInjection', 'enableSubsystems', 'enableSkills', 'enableMemories', 'logDecisions'].includes(key)
           ? typeof rawValue === 'boolean'
           : key === 'ignoreDirs'
             ? Array.isArray(rawValue) && rawValue.every((item) => typeof item === 'string')
