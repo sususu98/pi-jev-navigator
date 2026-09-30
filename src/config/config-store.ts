@@ -5,6 +5,7 @@ import * as jsonc from 'jsonc-parser/lib/esm/main.js';
 import { JevNavigatorConfig, ExecutionMode } from '../types.js';
 import { resolveGitContext } from '../graph/git.js';
 import { isProtectedConfigPath, writeSafeConfig } from './safe-file.js';
+import { redactSensitive, sensitiveValues } from './redact.js';
 
 export const { applyEdits, modify, parse } = jsonc;
 export type ParseError = jsonc.ParseError;
@@ -130,7 +131,11 @@ export class JevConfigStore {
     this.config = this.loadConfig(overrides);
   }
 
-  public getDiagnostics(): string[] { return [...this.diagnostics]; }
+  public getDiagnostics(): string[] {
+    return redactSensitive(this.diagnostics, [
+      ...sensitiveValues(this.config), process.env.TYPESAFE_API_KEY ?? '', process.env.JEV_API_KEY ?? '',
+    ]) as string[];
+  }
 
   private candidatePaths(base: string): string[] { return [`${base}.jsonc`, `${base}.json`]; }
 

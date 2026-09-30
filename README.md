@@ -91,7 +91,7 @@ mkdir -p ~/.pi/agent/secrets
 chmod 600 ~/.pi/agent/secrets/jev.key
 ```
 
-Project-local secret-file auto-discovery is intentionally disabled. `/jev-config` masks API keys. Toggle operations never copy global credentials into project configuration.
+Project-local secret-file auto-discovery is intentionally disabled. `/jev-config` recursively masks credentials in objects and arrays, including unused project rules. Diagnostics and telemetry also redact known configured/resolved Jev keys if echoed in text. Redaction operates on detached copies, never on the configuration used for HTTP authentication. Toggle operations never copy global credentials into project configuration.
 
 ## Configuration
 

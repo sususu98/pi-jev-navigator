@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from 'bun:test';
 import register, { type JevNavigator } from '../src/index.ts';
 import { transformNavigationContext } from '../src/injector/context-transform.ts';
 import type { DispatchDecision, JevNavigatorConfig } from '../src/types.ts';
+import { redactSensitive } from '../src/config/redact.ts';
 
 const tag = (name: string, content: string) => '<' + name + '>' + content + '</' + name + '>';
 const catalog = tag('skills', tag('available_skills', tag('skill', tag('name', 'fixture') + tag('location', '/fixture/SKILL.md'))));
@@ -26,6 +27,7 @@ function harness(options: { cfg?: JevNavigatorConfig; hasKey?: boolean; evaluate
   const nav = {
     hasApiKey: () => options.hasKey !== false,
     getConfig: () => ({ ...config, ...options.cfg }),
+    getConfigForDisplay: () => redactSensitive({ ...config, ...options.cfg }),
     getConfigStore: () => ({ getDiagnostics: () => [] }),
     getStatus: () => { throw new Error('expensive status must not run during hooks'); },
     evaluatePrompt: mock(options.evaluate ?? (async () => decision())),

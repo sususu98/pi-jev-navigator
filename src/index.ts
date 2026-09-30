@@ -11,6 +11,7 @@ import { JevClient } from './jev/client.js';
 import { JevPrompter } from './jev/prompter.js';
 import { TailInjector } from './injector/tail-injector.js';
 import { JevConfigStore } from './config/config-store.js';
+import { redactSensitive, sensitiveValues } from './config/redact.js';
 import { JevDualPipeline } from './jev/pipeline.js';
 import { formatRoutingStats } from './jev/stats.js';
 import { resolveGitContext } from './graph/git.js';
@@ -46,6 +47,9 @@ export class JevNavigator {
 
   public getConfigStore(): JevConfigStore { return this.configStore; }
   public getConfig(): JevNavigatorConfig { return this.configStore.get(); }
+  public getConfigForDisplay(): unknown {
+    return redactSensitive(this.getConfig(), [this.client.getApiKey() ?? '']);
+  }
   public hasApiKey(): boolean { return !!this.client.getApiKey(); }
 
   public getOrGenerateCodeGraph(forceRefresh: boolean = false): {
@@ -145,7 +149,8 @@ export class JevNavigator {
       const fd = fs.openSync(path.join(directory, filename), fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
       try {
         fs.fchmodSync(fd, 0o600);
-        fs.writeFileSync(fd, JSON.stringify(entry) + '\n', 'utf-8');
+        const safeEntry = redactSensitive(entry, [...sensitiveValues(this.getConfig()), this.client.getApiKey() ?? '']);
+        fs.writeFileSync(fd, JSON.stringify(safeEntry) + '\n', 'utf-8');
       } finally { fs.closeSync(fd); }
     } catch { /* logging must never block the agent */ }
   }
@@ -233,8 +238,8 @@ export default function registerJevNavigatorExtension(
   pi.registerCommand('jev-config', {
     description: 'Inspect merged configuration (API key redacted)',
     handler: async (_args, ctx) => {
-      const config = getNavigator(ctx.cwd).getConfig();
-      ctx.ui.notify(`⚡ [Jev Config]\n${JSON.stringify({ ...config, ...(config.apiKey ? { apiKey: '[REDACTED]' } : {}) }, null, 2)}`, 'info');
+      const config = getNavigator(ctx.cwd).getConfigForDisplay();
+      ctx.ui.notify(`⚡ [Jev Config]\n${JSON.stringify(config, null, 2)}`, 'info');
     },
   });
   pi.registerCommand('jev-toggle', {
