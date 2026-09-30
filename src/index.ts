@@ -12,6 +12,7 @@ import { JevPrompter } from './jev/prompter.js';
 import { TailInjector } from './injector/tail-injector.js';
 import { JevConfigStore } from './config/config-store.js';
 import { JevDualPipeline } from './jev/pipeline.js';
+import { formatRoutingStats } from './jev/stats.js';
 import { resolveGitContext } from './graph/git.js';
 import { registerRuntimeHooks } from './runtime.js';
 import type { JevNavigatorConfig, DispatchDecision, SkillSummary } from './types.js';
@@ -30,6 +31,7 @@ export class JevNavigator {
   private pipeline: JevDualPipeline;
   private injector = new TailInjector();
   private projectRoot: string;
+  private lastDecision?: DispatchDecision;
 
   constructor(projectRoot: string = process.cwd(), config: JevNavigatorConfig = {}, private homeDir: string = os.homedir(), transport: typeof fetch = globalThis.fetch) {
     this.projectRoot = path.resolve(projectRoot);
@@ -88,6 +90,8 @@ export class JevNavigator {
     options: EvaluationOptions = {}
   ): Promise<DispatchDecision | null> {
     const config = this.configStore.get();
+    const started = Date.now();
+    this.lastDecision = undefined;
     try {
       if (!this.hasApiKey() || options.signal?.aborted) return null;
       const graph = config.enableSubsystems !== false ? this.getOrGenerateCodeGraph() : { dsl: '', estimatedTokens: 0 };
@@ -109,6 +113,8 @@ export class JevNavigator {
         this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision?.bypassReason ?? 'timeout_or_error', latency_ms: decision?.latencyMs }, sessionMeta);
         return null;
       }
+      decision.latencyMs = Date.now() - started; // include local catalog/graph collection
+      this.lastDecision = decision;
       this.logDecisionToFile(userPrompt, decision, sessionMeta);
       return decision;
     } catch (error) {
@@ -153,6 +159,7 @@ export class JevNavigator {
     this.writeTelemetry(userPrompt, {
       latency_ms: decision.latencyMs, input_tokens: decision.inputTokens,
       pipeline_mode: decision.pipelineMode, token_breakdown: decision.tokenBreakdown,
+      estimated_payload_tokens: decision.estimatedPayloadTokens, estimated_track_tokens: decision.estimatedTrackTokens,
       target_subsystems: decision.targetSubsystems, activated_skill: decision.activatedSkill ?? null,
       activated_memory_guard: guards[0] ?? null, activated_memory_guards: guards,
       risk_score: decision.riskScore, confidence: decision.confidence, raw_answers: decision.rawAnswers,
@@ -182,6 +189,7 @@ export class JevNavigator {
       skillsCollected: this.collector.collectSkills(this.projectRoot).length,
       memoriesCollected: this.memoryCollector.collectMemories(this.projectRoot).length,
       cached: graph.fromCache,
+      lastRoutingStats: this.lastDecision ? formatRoutingStats(this.lastDecision) : 'No successful routing in this session',
     };
   }
 }
@@ -217,6 +225,7 @@ export default function registerJevNavigatorExtension(
         `• Codebase: ${status.codebaseFilesIndexed} files (~${status.estimatedTokens} estimated tokens)`,
         `• Catalogs: ${status.skillsCollected} standalone skills | ${status.memoriesCollected} memory guards`,
         `• Cache: ${status.cached ? 'TTL cache' : 'fresh'}`,
+        `• Last Routing: ${status.lastRoutingStats}`,
         ...diagnostics,
       ].join('\n'), diagnostics.length ? 'warning' : 'info');
     },
@@ -269,7 +278,7 @@ export default function registerJevNavigatorExtension(
           `• Skill: ${decision.activatedSkill || 'None'}`,
           `• Safety: ${decision.safetyRules?.join('; ') || 'Standard'}`,
           `• Risk: ${decision.riskScore ?? 0}`,
-          `• Latency: ${decision.latencyMs?.toFixed(1)}ms | Tokens: ${decision.inputTokens?.toLocaleString()}`,
+          `• Stats: ${formatRoutingStats(decision)}`,
         ].join('\n'), 'info');
       } finally { ctx.ui.setWorkingMessage(); }
     },

@@ -161,6 +161,23 @@ describe('Pi lifecycle integration', () => {
     expect(await h.emit('context_with_system', { messages: updated }, ctx)).toBeUndefined();
   });
 
+  it('shows actual per-track usage in runtime notifications and explicit evaluation', async () => {
+    const h = harness({ evaluate: async () => ({
+      ...decision(), pipelineMode: 'parallel', inputTokens: 300,
+      tokenBreakdown: { overviewTokens: 100, catalogTokens: 200, totalTokens: 300, overviewRequests: 1, catalogRequests: 2, totalRequests: 3 },
+    }) });
+    const ctx = context(); ctx.hasUI = true;
+    await h.emit('before_agent_start', { prompt: 'task' }, ctx);
+    await h.commands['jev-eval'].handler('task', ctx);
+    for (const call of ctx.ui.notify.mock.calls) {
+      expect(call[0]).toContain('Track A (Overview)');
+      expect(call[0]).toContain('Track B (Skills + Mem)');
+      expect(call[0]).toContain('(Parallel)');
+      expect(call[0]).toContain('aggregate, 2 requests');
+    }
+    expect(ctx.ui.notify.mock.calls).toHaveLength(2);
+  });
+
   it('redacts the API key from the config command', async () => {
     const h = harness({ cfg: { apiKey: 'FAKE_SECRET' } });
     const ctx = context();

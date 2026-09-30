@@ -19,7 +19,8 @@ The extension does not guarantee provider prefix-cache hits. Successful routed r
 before_agent_start
   → collect enabled inputs
   → estimate serialized payload tokens
-  → unified request OR parallel code/skills + memory requests
+  → unified request OR parallel Track A (overview) + Track B (skills/memory)
+  → capacity batches and Jev shortlist arbitration when an individual track is too large
   → validate every answer against its request criteria
 context_with_system (every model request)
   → replace system skill catalog only after routing succeeds
@@ -34,11 +35,13 @@ Memory entries use full-content hashes for exact deduplication. Metadata ranking
 
 ### Auto routing and capacity
 
-`auto` measures the serialized request's UTF-8 bytes, then estimates tokens using the existing **2.85 bytes/token** calibration. It splits at **28,000 estimated tokens**, when memory candidates exist. Actual token usage comes from the response.
+`auto` measures the complete serialized request's UTF-8 bytes, using **2.85 bytes/token**, and splits above **28,000 estimated tokens** when both logical tracks have inputs. **Track A contains repository overview only; Track B contains Skill metadata, scoped Memory and safety constraints.** Both receive the current task. A 255-choice capacity overflow can also require batching below the byte threshold. Disabled/empty tracks do not cause an empty second stream.
 
-These are estimates, not tokenizer-exact capacity checks. Parallel mode is **two separate requests, not a shared 64K window**. A large single track or user prompt can still exceed the service's limits; rejection fails open rather than silently dropping candidates. Disabled/empty memory streams do not cause a second request.
+Every outgoing request is checked against the estimated **32K per-request** and **255 options per choice question** limits. These remain calibrated estimates, not exact tokenizer guarantees. Oversized tracks are mechanically partitioned without candidate truncation. Track B winners are re-evaluated by Jev together (with bounded recursive arbitration if necessary); batch-local confidence is not treated as a globally comparable rank. Overview batches preserve every symbol record and merge evaluated directory coverage. An unsplittable task/record, non-converging shortlist, forced oversized `unified` request, error or timeout fails open.
 
-`timeoutMs` bounds HTTP headers **and the response body**, supports cancellation and bounds response size to 4 MiB. It is not an end-to-end latency guarantee: local graph/skill/memory collection happens before HTTP dispatch and currently includes synchronous filesystem/Git work.
+Cards, status and `/jev-eval` display **Unified versus Parallel** and per-track actual API input usage. Batched usage is explicitly labeled as an aggregate across requests. Telemetry stores estimated payload/track tokens separately from actual usage; two tracks never share a single 64K window.
+
+All batches and arbitration rounds share a deadline of at most **1,500ms** and a global four-request concurrency limit. `timeoutMs` can reduce this budget, not increase it. Headers **and the response body** are bounded, cancellation propagates and responses are limited to 4 MiB. Local graph/skill/memory collection happens before this deadline and still includes synchronous filesystem/Git work; successful decision latency includes that collection, but this is not an end-to-end latency guarantee.
 
 ### Graph implementations
 

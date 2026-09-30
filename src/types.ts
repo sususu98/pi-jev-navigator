@@ -110,8 +110,15 @@ export interface DispatchDecision {
   tokenBreakdown?: {
     codeTokens?: number;
     memoryTokens?: number;
+    overviewTokens?: number;
+    catalogTokens?: number;
+    overviewRequests?: number;
+    catalogRequests?: number;
     totalTokens?: number;
+    totalRequests?: number;
   };
+  estimatedPayloadTokens?: number;
+  estimatedTrackTokens?: { unified?: number; overview?: number; catalog?: number };
   pipelineMode?: ExecutionMode;
   bypassed?: boolean;
   bypassReason?: string;

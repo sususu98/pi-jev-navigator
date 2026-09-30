@@ -1,4 +1,5 @@
 import { DispatchDecision } from '../types.js';
+import { formatRoutingStats } from '../jev/stats.js';
 
 export class TailInjector {
   /**
@@ -40,17 +41,7 @@ export class TailInjector {
     }
 
     if (decision.latencyMs !== undefined) {
-      if (decision.pipelineMode === 'parallel' && decision.tokenBreakdown?.codeTokens && decision.tokenBreakdown?.memoryTokens) {
-        const codeK = (decision.tokenBreakdown.codeTokens / 1000).toFixed(1);
-        const memK = (decision.tokenBreakdown.memoryTokens / 1000).toFixed(1);
-        lines.push(
-          `• ⚡ Jev Decision Stats: ${decision.latencyMs.toFixed(1)}ms | Parallel Stream [Code: ${codeK}k + Mem: ${memK}k]`
-        );
-      } else if (decision.inputTokens) {
-        lines.push(
-          `• ⚡ Jev Decision Stats: ${decision.latencyMs.toFixed(1)}ms | ${decision.inputTokens.toLocaleString()} Input Tokens (${decision.pipelineMode || 'unified'})`
-        );
-      }
+      lines.push(`• ⚡ Jev Decision Stats: ${formatRoutingStats(decision)}`);
     }
 
     lines.push('---');

@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { JevQuestion, JevSystemOneRequest, JevSystemOneResponse } from '../types.js';
+import { assertRequestCapacity } from './capacity.js';
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -93,6 +94,8 @@ export class JevClient {
     return null;
   }
 
+  public getModel(): string { return this.model; }
+
   public setApiKey(key: string): void { this.apiKey = key.trim() || null; }
   public getApiKey(): string | null { return this.apiKey; }
 
@@ -104,6 +107,8 @@ export class JevClient {
   ): Promise<{ response: JevSystemOneResponse; latencyMs: number }> {
     if (!this.apiKey) throw new Error('TypeSafe Jev API Key not configured');
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Invalid Jev timeout');
+    timeoutMs = Math.min(timeoutMs, 1500);
+    assertRequestCapacity(request, this.model);
 
     const fullPayload: JevSystemOneRequest = { model: this.model, ...request };
     const t0 = Date.now();

@@ -144,21 +144,28 @@ describe('Jev candidate mapping and pipeline', () => {
     const large = await pipeline(offlineTransport).execute({ ...inputs, memories: [guard], userPrompt: 'x'.repeat(90000) }, { executionMode: 'auto' });
     expect(small?.pipelineMode).toBe('unified');
     expect(large?.pipelineMode).toBe('parallel');
-    expect(large?.tokenBreakdown).toEqual({ codeTokens: 100, memoryTokens: 100, totalTokens: 200 });
+    expect(large?.tokenBreakdown).toEqual({ overviewTokens: 100, catalogTokens: 100, totalTokens: 200, overviewRequests: 1, catalogRequests: 1, totalRequests: 2 });
   });
 
   it('sends every eligible skill without keyword filtering or truncation', async () => {
     const skills = Array.from({ length: 400 }, (_, i) => ({ name: `skill-${i}`, path: `/skills/${i}`, description: `中文技能说明 ${i} ${'detail '.repeat(40)}` }));
-    let count = 0;
+    const seen = new Set<string>();
     const transport = (async (_url, init) => {
       const body = JSON.parse(String(init?.body));
-      count = Object.keys(body.questions.q2_active_skill.criteria).length;
-      expect(body.questions.q2_active_skill.criteria.skill_399).toContain(skills[399].description);
+      const criteria = body.questions.q2_active_skill?.criteria ?? {};
+      expect(Object.keys(criteria).length).toBeLessThanOrEqual(255);
+      for (const [id, description] of Object.entries(criteria)) {
+        if (id === 'none') continue;
+        const i = Number(id.slice('skill_'.length));
+        expect(description).toContain(skills[i].description);
+        expect(description).toContain(skills[i].path);
+        seen.add(id);
+      }
       return Response.json(responseFor(body));
     }) as typeof fetch;
     const decision = await pipeline(transport).execute({ ...inputs, userPrompt: 'x', skills }, {});
     expect(decision?.bypassed).not.toBe(true);
-    expect(count).toBe(401);
+    expect(seen.size).toBe(400);
   });
 
   it('fails open uniformly in both modes and cancels a failed parallel sibling', async () => {

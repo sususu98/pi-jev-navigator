@@ -15,7 +15,7 @@ export class JevPrompter {
       .filter((dir) => dir !== '~');
     const dirCriteriaMap: Record<string, string> = Object.fromEntries(allDirs.map((dir, i) => [`dir_${i}`, dir]));
     const dirCriteria = { ...dirCriteriaMap, none_or_new: 'General / New Modules / No specific directory' };
-    const skillCriteria = Object.fromEntries(skills.map((skill, i) => [`skill_${i}`, `${skill.name}: ${skill.description}`]));
+    const skillCriteria = Object.fromEntries(skills.map((skill, i) => [`skill_${i}`, `${skill.name}: ${skill.description}\nLocation: ${JSON.stringify(skill.path)}`]));
     skillCriteria.none = 'No specialized SOP skill needed, standard general coding';
     const memoryCriteria = Object.fromEntries(memories.map((memory) => [memory.id, `[${memory.category}] ${memory.summary}`]));
     if (new Set(memories.map((m) => m.id)).size !== memories.length) {
@@ -39,7 +39,7 @@ export class JevPrompter {
         },
         q3_safety_guard: {
           type: 'choice',
-          instructions: 'Given the potential risks in `user_task`, which rule in `safety_rules` must be strictly enforced?',
+          instructions: 'Given the potential risks in `user_task`, which rule in the criteria must be strictly enforced?',
           criteria: ruleCriteria,
         },
         q4_complexity_risk: {

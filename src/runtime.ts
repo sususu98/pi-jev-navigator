@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import type { JevNavigator } from './index.js';
 import type { DispatchDecision } from './types.js';
 import { TailInjector } from './injector/tail-injector.js';
+import { formatRoutingStats } from './jev/stats.js';
 import { transformNavigationContext } from './injector/context-transform.js';
 
 /** Request-local transformations only; never rewrite provider payloads or persisted transcripts. */
@@ -89,7 +90,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
         for (const guard of decision.activatedMemoryGuards ?? (decision.activatedMemoryGuard ? [decision.activatedMemoryGuard] : [])) {
           parts.push(`Guard: [${guard.category}] ${guard.title.slice(0, 30)}`);
         }
-        ctx.ui.notify(`⚡ Jev Routed: ${parts.join(' | ')} (${decision.latencyMs?.toFixed(0) ?? '?'}ms)`, 'info');
+        ctx.ui.notify(`⚡ Jev Routed: ${parts.join(' | ')} | ${formatRoutingStats(decision)}`, 'info');
       }
       // Do not return systemPrompt: it would persist a decision-dependent leading prompt.
     } catch {
