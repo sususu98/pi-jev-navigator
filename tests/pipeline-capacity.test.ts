@@ -209,8 +209,8 @@ describe('bounded Jev tracks and catalog arbitration', () => {
 
   it('shows zero usage per track and distinguishes actual usage from estimates', () => {
     const text = formatRoutingStats({ pipelineMode: 'parallel', latencyMs: 1, estimatedPayloadTokens: 32000, tokenBreakdown: { overviewTokens: 0, catalogTokens: 0 } });
-    expect(text).toContain('Track A (Overview): 0.0k');
-    expect(text).toContain('Track B (Skills + Mem): 0.0k');
+    expect(text).toContain('Track A (Overview): 0.0K');
+    expect(text).toContain('Track B (Skills + Mem): 0.0K');
     expect(text).toContain('(Parallel)');
     expect(text).not.toContain('32,000');
   });

@@ -39,7 +39,8 @@ node scripts/check-package.mjs
 * **Strictly forbidden**: Never hardcode client-side keyword regexes, manual topic cluster heuristics (e.g. `if (title.includes('grep'))`), or heuristic skill/directory slicing to guess task relevance. Jev performs relevance evaluation.
 * **Skill metadata only**: send names, descriptions and locations to Jev; do not include complete SKILL.md bodies in routing requests. A selected skill's name/path and an instruction to read the complete SOP are valid tail guidance, not a missing feature.
 * **Memory scope**: consider global memories and the current project's memories, including canonical project inheritance for linked worktrees. Exclude memories belonging to unrelated projects. This is required scope isolation, not prohibited semantic pre-filtering.
-* Objective metadata (Recency, Project Scope, Category Hierarchy) may organize eligible candidates, but metadata rank alone is not proof of task relevance. Distinguish the candidate catalog from the final injected set.
+* **Hermes retrieval boundary**: scope eligibility is not permission to transmit the entire corpus. Use read-only SQLite/FTS5 lexical recall across global/current-project scopes, then bound candidates by count and serialized token budget before Jev. Generic tokenization, trigram queries, category channels and rank fusion are allowed retrieval mechanics, not client-side semantic relevance claims. No hardcoded topical keywords/synonym maps and no whole-corpus fallback on misses/errors.
+* Objective metadata (Recency, Project Scope, Category Hierarchy) may organize eligible candidates, but metadata rank alone is not proof of task relevance. Distinguish eligible corpus, retrieved candidates and final injected set.
 * **Precise memory injection**: inject only the memory constraints most relevant to the current task. Do not append the whole memory corpus or unrelated rules merely because they are available.
 
 ### 3. Dual-Pipeline Auto-Tiering (32K Per Request, 28K Split Threshold)
@@ -49,7 +50,7 @@ node scripts/check-package.mjs
 * Estimate the complete combined serialized payload, including task, overview, metadata, questions and request overhead, using the calibrated **2.85 bytes/token** estimate.
 * In `auto` mode, combined estimated payload **≤ 28K tokens** (~79.8 KB) uses the `Unified` single-request pipeline. When it **exceeds 28K**, execute Track A and Track B concurrently via `Promise.all` and merge their routing decisions.
 * Splitting is not sufficient if either individual track still exceeds 32K. Capacity handling must respect each request's limit; do not silently treat a large catalog as supported merely because two tracks exist.
-* **Explicit parallel visibility**: navigation cards, status output and reports must clearly identify `Unified` versus `Parallel`. Show per-track actual token usage, e.g. `Track A (Overview): 24k | Track B (Skills + Mem): 8k (Parallel)`.
+* **Explicit parallel visibility**: navigation cards, status output and reports must clearly identify `Unified` versus `Parallel`. Show per-track actual token usage, e.g. `Track A (Overview): 24K | Track B (Skills + Mem): 8K (Parallel)`.
 * Never display the two tracks' token sum as an unexplained single-request count. If a total is shown, label it as an aggregate across parallel requests. Keep estimated payload tokens distinct from actual API usage.
 * Fast routing is a product goal, not an unverified fixed ~450ms guarantee. Measure local collection plus API evaluation and injection when reporting end-to-end latency.
 

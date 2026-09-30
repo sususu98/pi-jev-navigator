@@ -5,7 +5,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { CodeGraphExtractor, isSystemRootOrHome } from './graph/codegraph.js';
 import { GitNexusAdapter } from './graph/gitnexus-adapter.js';
 import { SkillCollector } from './skills/collector.js';
-import { MemoryCollector } from './memory/collector.js';
+import { HermesMemoryRetriever } from './memory/hermes-retriever.js';
 import { TTLStore } from './cache/ttl-store.js';
 import { JevClient } from './jev/client.js';
 import { JevPrompter } from './jev/prompter.js';
@@ -13,10 +13,10 @@ import { TailInjector } from './injector/tail-injector.js';
 import { JevConfigStore } from './config/config-store.js';
 import { redactSensitive, sensitiveValues } from './config/redact.js';
 import { JevDualPipeline } from './jev/pipeline.js';
-import { formatRoutingStats } from './jev/stats.js';
+import { formatRoutingStats, formatMemoryRetrieval } from './jev/stats.js';
 import { resolveGitContext } from './graph/git.js';
 import { registerRuntimeHooks } from './runtime.js';
-import type { JevNavigatorConfig, DispatchDecision, SkillSummary } from './types.js';
+import type { JevNavigatorConfig, DispatchDecision, SkillSummary, MemoryRetrievalStats } from './types.js';
 
 interface SessionMeta { sessionFile?: string; sessionId?: string }
 interface EvaluationOptions { skills?: SkillSummary[]; signal?: AbortSignal }
@@ -26,7 +26,8 @@ export class JevNavigator {
   private extractor = new CodeGraphExtractor();
   private gitnexus = new GitNexusAdapter();
   private collector: SkillCollector;
-  private memoryCollector: MemoryCollector;
+  private memoryRetriever: HermesMemoryRetriever;
+  private lastMemoryRetrieval?: MemoryRetrievalStats;
   private ttlStore: TTLStore;
   private client: JevClient;
   private pipeline: JevDualPipeline;
@@ -39,7 +40,7 @@ export class JevNavigator {
     this.configStore = new JevConfigStore(this.projectRoot, config, homeDir);
     const active = this.configStore.get();
     this.collector = new SkillCollector(homeDir);
-    this.memoryCollector = new MemoryCollector(homeDir);
+    this.memoryRetriever = new HermesMemoryRetriever(homeDir);
     this.ttlStore = new TTLStore(this.projectRoot, active.cacheTtlDays);
     this.client = new JevClient(active.endpoint, active.model, active.apiKey, active.keyFilePath, homeDir, transport);
     this.pipeline = new JevDualPipeline(this.client, new JevPrompter());
@@ -96,6 +97,7 @@ export class JevNavigator {
     const config = this.configStore.get();
     const started = Date.now();
     this.lastDecision = undefined;
+    this.lastMemoryRetrieval = undefined;
     try {
       if (!this.hasApiKey() || options.signal?.aborted) return null;
       const graph = config.enableSubsystems !== false ? this.getOrGenerateCodeGraph() : { dsl: '', estimatedTokens: 0 };
@@ -108,13 +110,21 @@ export class JevNavigator {
           if (!names.has(skill.name)) { skills.push(skill); names.add(skill.name); }
         }
       }
-      const memories = config.enableMemories !== false
-        ? this.memoryCollector.collectMemories(this.projectRoot) : [];
+      const retrieval = config.enableMemories !== false
+        ? this.memoryRetriever.retrieve(userPrompt, this.projectRoot, {
+          maxCandidates: config.memoryCandidateLimit, maxTokens: config.memoryCandidateTokens, signal: options.signal,
+        }) : undefined;
+      this.lastMemoryRetrieval = retrieval?.stats;
+      const memories = retrieval?.memories ?? [];
       const decision = await this.pipeline.execute({
         userPrompt, dsl: graph.dsl, estimatedTokens: graph.estimatedTokens, skills, memories, safetyRules,
       }, config, options.signal);
+      if (decision && retrieval) {
+        retrieval.stats.selected = decision.activatedMemoryGuards?.length ?? (decision.activatedMemoryGuard ? 1 : 0);
+        decision.memoryRetrieval = retrieval.stats;
+      }
       if (!decision || decision.bypassed) {
-        this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision?.bypassReason ?? 'timeout_or_error', latency_ms: decision?.latencyMs }, sessionMeta);
+        this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision?.bypassReason ?? 'timeout_or_error', latency_ms: Date.now() - started, memory_retrieval: retrieval?.stats }, sessionMeta);
         return null;
       }
       decision.latencyMs = Date.now() - started; // include local catalog/graph collection
@@ -164,6 +174,7 @@ export class JevNavigator {
     this.writeTelemetry(userPrompt, {
       latency_ms: decision.latencyMs, input_tokens: decision.inputTokens,
       pipeline_mode: decision.pipelineMode, token_breakdown: decision.tokenBreakdown,
+      memory_retrieval: decision.memoryRetrieval,
       estimated_payload_tokens: decision.estimatedPayloadTokens, estimated_track_tokens: decision.estimatedTrackTokens,
       target_subsystems: decision.targetSubsystems, activated_skill: decision.activatedSkill ?? null,
       activated_memory_guard: guards[0] ?? null, activated_memory_guards: guards,
@@ -192,7 +203,9 @@ export class JevNavigator {
       gitnexusIndexed: gitnexus.isIndexed, gitnexusCommit: gitnexus.commitSha || 'N/A',
       codebaseFilesIndexed: graph.totalFiles, estimatedTokens: graph.estimatedTokens,
       skillsCollected: this.collector.collectSkills(this.projectRoot).length,
-      memoriesCollected: this.memoryCollector.collectMemories(this.projectRoot).length,
+      memoriesCollected: this.lastMemoryRetrieval?.eligible ??
+        (this.getConfig().enableMemories !== false ? this.memoryRetriever.retrieve('', this.projectRoot).stats.eligible : 0),
+      memoryRetrieval: this.lastMemoryRetrieval,
       cached: graph.fromCache,
       lastRoutingStats: this.lastDecision ? formatRoutingStats(this.lastDecision) : 'No successful routing in this session',
     };
@@ -228,8 +241,9 @@ export default function registerJevNavigatorExtension(
         `• Subsystems: ${config.enableSubsystems} | Skills: ${config.enableSkills} | Memories: ${config.enableMemories}`,
         `• API Key Bound: ${status.apiKeyConfigured ? 'YES' : 'NO — set TYPESAFE_API_KEY or ~/.pi/agent/secrets/jev.key'}`,
         `• Codebase: ${status.codebaseFilesIndexed} files (~${status.estimatedTokens} estimated tokens)`,
-        `• Catalogs: ${status.skillsCollected} standalone skills | ${status.memoriesCollected} memory guards`,
+        `• Catalogs: ${status.skillsCollected} standalone skills | ${status.memoriesCollected} eligible memories`,
         `• Cache: ${status.cached ? 'TTL cache' : 'fresh'}`,
+        ...(status.memoryRetrieval ? [`• ${formatMemoryRetrieval(status.memoryRetrieval as MemoryRetrievalStats)}`] : []),
         `• Last Routing: ${status.lastRoutingStats}`,
         ...diagnostics,
       ].join('\n'), diagnostics.length ? 'warning' : 'info');
@@ -291,4 +305,4 @@ export default function registerJevNavigatorExtension(
 }
 
 export * from './types.js';
-export { CodeGraphExtractor, SkillCollector, TTLStore, JevClient, JevPrompter, TailInjector };
+export { CodeGraphExtractor, SkillCollector, TTLStore, JevClient, JevPrompter, TailInjector, HermesMemoryRetriever };

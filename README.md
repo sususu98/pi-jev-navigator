@@ -17,13 +17,13 @@ The extension does not guarantee provider prefix-cache hits. Successful routed r
 
 ```text
 before_agent_start
-  → collect enabled inputs
+  → collect graph/skill metadata; retrieve bounded scoped memories from Hermes SQLite
   → estimate serialized payload tokens
   → unified request OR parallel Track A (overview) + Track B (skills/memory)
   → capacity batches and Jev shortlist arbitration when an individual track is too large
   → validate every answer against its request criteria
 context_with_system (every model request)
-  → replace system skill catalog only after routing succeeds
+  → keep system prompt and native skill catalog unchanged
   → append cached navigation guidance, including full SOP file paths
 agent_settled / session_shutdown
   → clear session-scoped decision
@@ -31,13 +31,19 @@ agent_settled / session_shutdown
 
 Directory and skill candidates are sent in full: there is **no client-side keyword or semantic pre-filter**. Candidate IDs are collision-free within a request. Pi's canonical skill catalog supplies package/custom-path and resource-selection behavior; learned Hermes SOPs supplement it without overriding native names. Standalone library usage also supports recursive directories, symlinks, YAML frontmatter, explicit paths and literal skill paths from settings. Manual-only skills are not auto-selected.
 
-Memory entries use full-content hashes for exact deduplication. Metadata ranking organizes eligible global/current-project candidates without a routing cutoff; different rules sharing a title or prefix are not merged. The legacy `maxMemoryGuards` setting no longer truncates routing candidates. `maxInjectedMemoryGuards` (default 3) limits only the final Jev-selected tail constraints. Memory source fingerprints (inode, size, nanosecond mtime/ctime and mode) are checked on every collection, so edits, appends, deletes and new files invalidate immediately; unchanged files reuse their parsed blocks. The five-minute TTL refreshes metadata ranking, not memory visibility.
+Memory routing uses a **read-only Hermes SQLite/FTS5 adapter**, not a full Markdown dump. It reads the configured Hermes `memoryDir` (including the legacy-directory alias) and separates global/current-project searches; linked worktrees inherit the main project identity. The adapter recognizes the `memories` + trigram `memory_fts` schema; Hermes currently exposes no stable extension-to-extension search API, so unknown schemas are bypassed rather than migrated or repaired.
+
+Bounded lexical queries use task identifiers and mechanical Chinese trigram segmentation, without topic dictionaries or hardcoded synonyms. Identifier conjunctions, contextual clauses and Chinese fragments produce candidate lists; per-view leaders and reciprocal-rank fusion preserve lexical diversity. Correction/preference, failure-store and general-memory channels are interleaved across both scopes. This is **candidate recall, not semantic relevance evaluation**: only Jev may select final tail constraints. Lexical wording gaps and budget omissions remain possible; this does not guarantee exhaustive recall.
+
+`memoryCandidateLimit` defaults to **64** and `memoryCandidateTokens` to **8K estimated tokens** for the complete serialized memory-choice question. Whole records that do not fit are omitted, never clipped; candidate limits are separate from `maxInjectedMemoryGuards` (default **3**). Stable SQLite IDs deduplicate results without merging similar rules, and every retrieval sees a fresh read transaction. A missing, incompatible, corrupt, empty or locked database returns no memory candidates, **never a whole-Markdown fallback**; graph/skill routing may still proceed. The old Markdown collector remains only for standalone compatibility. No database writes, synchronization, consolidation or pinned-instruction re-injection occurs.
+
+Cards/status/telemetry distinguish eligible store size, unique retrieved results, candidates submitted, selected guards, retrieval latency, budget omissions and estimated memory tokens. An eligible corpus of 1,800 records does not mean 1,800 records were sent.
 
 ### Auto routing and capacity
 
-`auto` measures the complete serialized request's UTF-8 bytes, using **2.85 bytes/token**, and splits above **28,000 estimated tokens** when both logical tracks have inputs. **Track A contains repository overview only; Track B contains Skill metadata, scoped Memory and safety constraints.** Both receive the current task. A 255-choice capacity overflow can also require batching below the byte threshold. Disabled/empty tracks do not cause an empty second stream.
+`auto` measures the complete serialized request's UTF-8 bytes, using **2.85 bytes/token**, and splits above **28,000 estimated tokens** when both logical tracks have inputs. **Track A contains repository overview only; Track B contains Skill metadata, retrieved scoped Memory candidates and safety constraints.** Both receive the current task. A 255-choice capacity overflow can also require batching below the byte threshold. Disabled/empty tracks do not cause an empty second stream.
 
-Every outgoing request is checked against the estimated **32K per-request** and **255 options per choice question** limits. These remain calibrated estimates, not exact tokenizer guarantees. Oversized tracks are mechanically partitioned without candidate truncation. Track B winners are re-evaluated by Jev together (with bounded recursive arbitration if necessary); batch-local confidence is not treated as a globally comparable rank. Overview batches preserve every symbol record and merge evaluated directory coverage. An unsplittable task/record, non-converging shortlist, forced oversized `unified` request, error or timeout fails open.
+Every outgoing request is checked against the estimated **32K per-request** and **255 options per choice question** limits. These remain calibrated estimates, not exact tokenizer guarantees. Oversized overview/skill tracks are mechanically partitioned without candidate truncation; Memory is already bounded by local retrieval before this capacity check. Track B winners are re-evaluated by Jev together (with bounded recursive arbitration if necessary); batch-local confidence is not treated as a globally comparable rank. Overview batches preserve every symbol record and merge evaluated directory coverage. An unsplittable task/record, non-converging shortlist, forced oversized `unified` request, error or timeout fails open.
 
 Cards, status and `/jev-eval` display **Unified versus Parallel** and per-track actual API input usage. Batched usage is explicitly labeled as an aggregate across requests. Telemetry stores estimated payload/track tokens separately from actual usage; two tracks never share a single 64K window.
 
@@ -112,11 +118,13 @@ Project-local secret-file auto-discovery is intentionally disabled. `/jev-config
   "enableSubsystems": true,
   "enableSkills": true,
   "enableMemories": true,
-  "enableSystemPromptPruning": true,
+  "enableSystemPromptPruning": false, // compatibility option; prompts are never pruned
 
   "executionMode": "auto", // auto | parallel | unified
   "timeoutMs": 1500,
-  "maxInjectedMemoryGuards": 3, // output limit, not a candidate cutoff
+  "memoryCandidateLimit": 64, // bounded local recall, hard ceiling 254
+  "memoryCandidateTokens": 8000, // estimated serialized memory-question budget (8K)
+  "maxInjectedMemoryGuards": 3, // Jev-selected tail output limit
   "cacheTtlDays": 7,
   "logDecisions": true,
 }
@@ -134,7 +142,7 @@ If an older version copied a global API key into project configuration, remove t
 | --- | --- |
 | `/jev-status` | Inspect graph, Git/worktree metadata, credentials presence and switches |
 | `/jev-config` | Inspect merged configuration with the API key redacted |
-| `/jev-toggle skills\|mem\|subsystems\|pruning\|mode` | Persist a switch to the active project JSON/JSONC file |
+| `/jev-toggle skills\|mem\|subsystems\|mode` | Persist a switch to the active project JSON/JSONC file |
 | `/jev-refresh` | Rebuild the exported-symbol map |
 | `/jev-eval <query>` | Run an explicit diagnostic decision |
 

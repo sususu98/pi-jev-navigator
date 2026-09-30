@@ -7,6 +7,7 @@ import { MemoryCollector } from '../src/memory/collector.ts';
 import { JevPrompter } from '../src/jev/prompter.ts';
 import type { JevSystemOneRequest, MemoryGuard } from '../src/types.ts';
 import { put, responseFor } from './support.ts';
+import { makeHermesDatabase } from './memory-support.ts';
 
 let temporary: string;
 let home: string;
@@ -71,11 +72,12 @@ describe('memory file freshness', () => {
 });
 
 describe('task-relevant memory routing', () => {
-  it('lets Jev see and select an old relevant rule beyond the legacy cutoff', async () => {
-    const records = Array.from({ length: 100 }, (_, i) => block(`unrelated-${i}`));
-    records.push('[insight] old-relevant-procedure\nPrecisely follow this old SOP\n<!-- last=2020-01-01 -->');
-    records.push(block('FOREIGN_PROJECT_SECRET', 'another-project'));
-    put(file(), records.join('\n§\n'));
+  it('retrieves an old relevant rule beyond the legacy cutoff without sending unrelated memory', async () => {
+    makeHermesDatabase(home, [
+      ...Array.from({ length: 100 }, (_, i) => ({ content: `unrelated-${i}` })),
+      { content: 'old-relevant-procedure\nPrecisely follow this old SOP', category: 'insight', created: '2020-01-01' },
+      { content: 'FOREIGN_PROJECT_SECRET relevant procedure', project: 'another-project' },
+    ]);
     let observed = 0;
     const transport = (async (_url, init) => {
       const request: JevSystemOneRequest = JSON.parse(String(init?.body));
@@ -94,7 +96,7 @@ describe('task-relevant memory routing', () => {
       maxMemoryGuards: 1, maxInjectedMemoryGuards: 1,
     }, home, transport);
     const result = await nav.processUserPrompt('Use the old relevant procedure');
-    expect(observed).toBe(101);
+    expect(observed).toBe(1);
     expect(result.enrichedPrompt).toContain('Precisely follow this old SOP');
     expect(result.enrichedPrompt).not.toContain('unrelated-');
     expect(result.decision?.activatedMemoryGuards).toHaveLength(1);

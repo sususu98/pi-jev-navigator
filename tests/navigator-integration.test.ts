@@ -266,13 +266,9 @@ describe('JevNavigator integration', () => {
   it('disables file scanning and AST indexing on home/root directory while honoring fallback config for memories', async () => {
     const home = tempDir('jev-home-');
     try {
-      // 1. Write Hermes global memory file in home directory
-      const hermesDir = path.join(home, '.pi', 'agent', 'pi-hermes-memory');
-      fs.mkdirSync(hermesDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(hermesDir, 'failures.md'),
-        '[correction] Always run tests before commit\nMust execute test runner\n<!-- project64=Z2xvYmFs last=2026-03-30 -->\n'
-      );
+      // 1. Write synthetic Hermes SQLite memory in home directory
+      const { makeHermesDatabase } = await import('./memory-support.ts');
+      makeHermesDatabase(home, [{ content: 'Always run tests before commit\nMust execute test runner' }]);
 
       let receivedQuestions: any = null;
       let receivedState: any = null;

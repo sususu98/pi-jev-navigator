@@ -1,5 +1,5 @@
 import { DispatchDecision } from '../types.js';
-import { formatRoutingStats } from '../jev/stats.js';
+import { formatRoutingStats, formatMemoryRetrieval } from '../jev/stats.js';
 
 export class TailInjector {
   /**
@@ -34,6 +34,8 @@ export class TailInjector {
         lines.push(`  ⚠️ [${g.category}] ${g.summary}`);
       }
     }
+
+    if (decision.memoryRetrieval) lines.push(`• 🧠 ${formatMemoryRetrieval(decision.memoryRetrieval)}`);
 
     if (decision.riskScore !== undefined) {
       const riskEmoji = decision.riskScore >= 2 ? '⚠️ High' : decision.riskScore >= 1 ? '⚡ Moderate' : '✅ Low';

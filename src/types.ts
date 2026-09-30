@@ -94,7 +94,15 @@ export interface MemoryGuard {
 
 export type ExecutionMode = 'auto' | 'parallel' | 'unified';
 
+export interface MemoryRetrievalStats {
+  source: 'hermes-sqlite';
+  status: 'ready' | 'empty' | 'disabled' | 'unavailable' | 'unsupported' | 'cancelled';
+  eligible: number; retrieved: number; candidates: number; selected: number;
+  latencyMs: number; estimatedTokens: number; queries: number; budgetLimited: boolean;
+}
+
 export interface DispatchDecision {
+  memoryRetrieval?: MemoryRetrievalStats;
   targetSubsystems?: string[];
   targetFiles?: string[];
   activatedSkill?: string;
@@ -136,10 +144,14 @@ export interface JevNavigatorConfig {
   enableSystemPromptPruning?: boolean;
   executionMode?: ExecutionMode;
   timeoutMs?: number;
-  /** @deprecated Routing no longer truncates eligible candidates. */
+  /** @deprecated Use memoryCandidateLimit for retrieval and maxInjectedMemoryGuards for output. */
   maxMemoryGuards?: number;
   /** Maximum Jev-selected constraints appended to the user prompt. */
   maxInjectedMemoryGuards?: number;
+  /** Maximum locally retrieved memory candidates sent to Jev (default 64). */
+  memoryCandidateLimit?: number;
+  /** Serialized memory-choice criteria budget, estimated tokens (default 8000). */
+  memoryCandidateTokens?: number;
   cacheTtlDays?: number;
   logDecisions?: boolean;
   ignoreDirs?: string[];
