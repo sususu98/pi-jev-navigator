@@ -175,7 +175,9 @@ export class CodeGraphExtractor {
     const rootDir = path.resolve(options.rootDir);
     const excludeTests = options.excludeTests ?? true;
     const maxSymbolsPerFile = options.maxSymbolsPerFile ?? 6;
-    const maxFiles = options.maxFiles ?? 3000;
+    const requestedMaxFiles = options.maxFiles ?? 3000;
+    const maxFiles = Number.isFinite(requestedMaxFiles)
+      ? Math.min(3000, Math.max(0, Math.floor(requestedMaxFiles))) : 3000;
     const maxDepth = options.maxDepth ?? 8;
 
     // Home / System Root Guard: Never recursively crawl user home directory or system root!
@@ -192,11 +194,12 @@ export class CodeGraphExtractor {
     const ignoreDirs = new Set([...this.defaultIgnoreDirs, ...customIgnores]);
 
     const dirClusters = new Map<string, string[]>();
-    let totalFiles = 0;
+    let totalFiles = 0; // Files with symbols emitted into the DSL.
+    let scannedFiles = 0; // Read attempts, including empty/unreadable source files.
     let totalSymbols = 0;
 
     const walk = (currentDir: string, relDir: string, depth: number = 0) => {
-      if (totalFiles >= maxFiles || depth > maxDepth) return;
+      if (scannedFiles >= maxFiles || depth > maxDepth) return;
 
       let entries: fs.Dirent[];
       try {
@@ -206,7 +209,7 @@ export class CodeGraphExtractor {
       }
 
       for (const entry of entries) {
-        if (totalFiles >= maxFiles) break;
+        if (scannedFiles >= maxFiles) break;
 
         const name = entry.name;
         if (name.startsWith('.') && name !== '.') {
@@ -232,6 +235,9 @@ export class CodeGraphExtractor {
             continue;
           }
 
+          // Charge before reading: missing symbols or read failures must not
+          // allow a repository to bypass the global scan budget.
+          scannedFiles++;
           try {
             const content = fs.readFileSync(fullPath, 'utf-8');
             const symbols = this.extractSymbols(name, content, maxSymbolsPerFile);

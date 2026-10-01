@@ -61,7 +61,8 @@ All batches and arbitration rounds share a deadline of at most **1,500ms** and a
 - The extension uses a compact **regex-based exported-symbol map** for Go, TS/JS (including TSX/JSX), Rust and Python. It is not a complete multi-language AST or call graph.
 - The separate `jev-graph` CLI uses Go's AST parser for **Go files only**.
 - GitNexus status can be inspected, but its analyzer and impact queries are not automatically part of the routing pipeline.
-- The symbol-map cache has a configurable TTL. Use `/jev-refresh` after source changes when immediate freshness is needed.
+- Extension scanning limits actual supported-source read attempts (including files without symbols and failed reads), with a hard ceiling of 3,000; indexed-file statistics count only emitted symbol records.
+- The symbol-map cache has a configurable TTL. Use `/jev-refresh` after source changes when immediate freshness is needed. Cache writes reject linked files/directories and path escapes, and use private atomic replacement; unsafe cache publication does not prevent routing with the generated in-memory map.
 
 ## Installation
 

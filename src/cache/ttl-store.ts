@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { writeSafeConfig } from '../config/safe-file.js';
 
 export interface CacheEntry<T> {
   timestamp: number;
@@ -9,20 +10,30 @@ export interface CacheEntry<T> {
 export class TTLStore {
   private cacheDir: string;
   private ttlMs: number;
+  private projectRoot: string;
 
   constructor(projectRoot: string, ttlDays: number = 7) {
-    this.cacheDir = path.join(projectRoot, '.pi');
+    this.projectRoot = path.resolve(projectRoot);
+    this.cacheDir = path.join(this.projectRoot, '.pi');
     this.ttlMs = ttlDays * 24 * 60 * 60 * 1000;
   }
 
-  private ensureDir() {
-    if (!fs.existsSync(this.cacheDir)) {
-      fs.mkdirSync(this.cacheDir, { recursive: true });
+  private cachePath(fileName: string): string {
+    // Cache APIs accept a filename, never a path or traversal outside .pi.
+    if (!fileName || fileName === '.' || fileName === '..' || /[/\\:\0]/.test(fileName)) {
+      throw new Error('Invalid cache filename');
     }
+    return path.join(this.cacheDir, fileName);
+  }
+
+  private writeCache(fileName: string, content: string): void {
+    // Reuse link/parent identity checks and atomic replacement; never truncate
+    // a project-controlled link's target.
+    writeSafeConfig(this.cachePath(fileName), this.projectRoot, [], () => content);
   }
 
   public get<T>(key: string): T | null {
-    const filePath = path.join(this.cacheDir, `${key}.json`);
+    const filePath = this.cachePath(`${key}.json`);
     if (!fs.existsSync(filePath)) return null;
 
     try {
@@ -40,17 +51,15 @@ export class TTLStore {
   }
 
   public set<T>(key: string, data: T): void {
-    this.ensureDir();
-    const filePath = path.join(this.cacheDir, `${key}.json`);
     const entry: CacheEntry<T> = {
       timestamp: Date.now(),
       data,
     };
-    fs.writeFileSync(filePath, JSON.stringify(entry, null, 2), 'utf-8');
+    this.writeCache(`${key}.json`, JSON.stringify(entry, null, 2));
   }
 
   public getRawFile(fileName: string): string | null {
-    const filePath = path.join(this.cacheDir, fileName);
+    const filePath = this.cachePath(fileName);
     if (!fs.existsSync(filePath)) return null;
     try {
       const stat = fs.statSync(filePath);
@@ -64,9 +73,7 @@ export class TTLStore {
   }
 
   public setRawFile(fileName: string, content: string): void {
-    this.ensureDir();
-    const filePath = path.join(this.cacheDir, fileName);
-    fs.writeFileSync(filePath, content, 'utf-8');
+    this.writeCache(fileName, content);
   }
 
   public clear(): void {
