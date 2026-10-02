@@ -11,12 +11,22 @@ interface Row {
   id: number; project: string | null; target: string; category: string | null;
   content: string; created: string; last_referenced: string;
 }
-export interface RetrievalOptions { maxCandidates?: number; maxTokens?: number; signal?: AbortSignal }
+export interface RetrievalOptions {
+  maxCandidates?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  extraTerms?: string[];
+  keywordStats?: {
+    terms?: string[];
+    latencyMs?: number;
+    status?: 'ready' | 'bypassed' | 'timeout' | 'error';
+  };
+}
 export interface RetrievalResult { memories: MemoryGuard[]; stats: MemoryRetrievalStats }
 const categories = new Set(['correction', 'preference', 'failure', 'convention', 'tool-quirk', 'insight', 'memory']);
 
 /** Lexical query construction only: no topic dictionary, synonyms or semantic relevance guesses. */
-export function buildMemoryQueries(task: string): string[] {
+export function buildMemoryQueries(task: string, extraTerms: string[] = []): string[] {
   const text = task.normalize('NFKC').slice(0, 8192);
   const atoms = [...new Set(text.match(/[\p{L}\p{N}_./-]+/gu) ?? [])]
     .filter((term) => [...term].length >= 3).slice(0, 48);
@@ -38,7 +48,17 @@ export function buildMemoryQueries(task: string): string[] {
     ...(gramQuery ? [gramQuery] : []),
     ...(!gramQuery && atoms.length ? [atoms.map(quote).join(' OR '), ...identifiers.slice(0, 3).map(quote)] : []),
   ];
-  return [...new Set(queries)].slice(0, 8);
+  if (Array.isArray(extraTerms) && extraTerms.length > 0) {
+    const cleanExtra = extraTerms
+      .map((t) => t.normalize('NFKC').trim())
+      .filter((t) => t.length >= 2 && t.length <= 32);
+    const quotedExtra = [...new Set(cleanExtra)].map(quote);
+    if (quotedExtra.length > 0) {
+      queries.push(quotedExtra.join(' OR '), ...quotedExtra);
+    }
+  }
+
+  return [...new Set(queries)].slice(0, 16);
 }
 
 export function memoryFromRow(row: Row): MemoryGuard {
@@ -129,7 +149,7 @@ export class HermesMemoryRetriever {
       const project = resolveGitContext(projectRoot).projectName || 'default';
       const count = db.prepare('SELECT count(*) AS n FROM memories WHERE project IS NULL OR project = ?').get(project) as { n: number };
       stats.eligible = Number(count.n);
-      const queries = buildMemoryQueries(task);
+      const queries = buildMemoryQueries(task, options.extraTerms);
       const channels: Row[][] = [];
       for (const channelType of ['guards', 'lessons', 'general']) {
         for (const scope of [project, null]) {
@@ -171,6 +191,11 @@ export class HermesMemoryRetriever {
       Object.assign(stats, { retrieved: bounded.retrieved, candidates: bounded.memories.length,
         budgetLimited: bounded.budgetLimited, estimatedTokens: bounded.estimatedTokens });
       if (!bounded.memories.length) stats.status = 'empty';
+      if (options.keywordStats) {
+        stats.keywordTerms = options.keywordStats.terms;
+        stats.keywordLatencyMs = options.keywordStats.latencyMs;
+        stats.keywordStatus = options.keywordStats.status;
+      }
       return { memories: bounded.memories, stats };
     } catch {
       stats.status = 'unavailable'; // no credentials, file content or untrusted SQLite error echo

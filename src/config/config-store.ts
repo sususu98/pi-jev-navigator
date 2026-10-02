@@ -30,6 +30,9 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   memoryApplicabilityThreshold: 0.75,
   memoryCandidateLimit: 64,
   memoryCandidateTokens: 8000,
+  enableKeywordExpansion: true,
+  keywordModel: 'gemini-3.5-flash-lite',
+  keywordTimeoutMs: 1800,
   cacheTtlDays: 7,
   logDecisions: true,
   ignoreDirs: [
@@ -48,7 +51,7 @@ const PROTECTED_PROJECT_KEYS = new Set<keyof JevNavigatorConfig>(['endpoint', 'a
 const CONFIG_KEYS = new Set<keyof JevNavigatorConfig>([
   'apiKey', 'keyFilePath', 'endpoint', 'model', 'enableTailInjection', 'enableSubsystems',
   'enableSkills', 'enableMemories', 'executionMode', 'timeoutMs',
-  'maxMemoryGuards', 'maxInjectedMemoryGuards', 'maxInjectedSkills', 'skillApplicabilityThreshold', 'memoryApplicabilityThreshold', 'memoryCandidateLimit', 'memoryCandidateTokens', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
+  'maxMemoryGuards', 'maxInjectedMemoryGuards', 'maxInjectedSkills', 'skillApplicabilityThreshold', 'memoryApplicabilityThreshold', 'memoryCandidateLimit', 'memoryCandidateTokens', 'enableKeywordExpansion', 'keywordModel', 'keywordTimeoutMs', 'cacheTtlDays', 'logDecisions', 'ignoreDirs', 'maxFilesIndexed', 'maxScanDepth',
   'projects',
 ]);
 type ConfigKey = keyof JevNavigatorConfig;
@@ -84,16 +87,16 @@ function validateLayer(value: unknown, label: string, diagnostics: string[]): La
       ? (typeof rawValue === 'object' && rawValue !== null)
       : key === 'executionMode'
       ? rawValue === 'auto' || rawValue === 'parallel' || rawValue === 'unified'
-      : key === 'apiKey' || key === 'keyFilePath' || key === 'endpoint' || key === 'model'
+      : key === 'apiKey' || key === 'keyFilePath' || key === 'endpoint' || key === 'model' || key === 'keywordModel'
         ? typeof rawValue === 'string' && rawValue.length > 0
-        : ['enableTailInjection', 'enableSubsystems', 'enableSkills', 'enableMemories', 'logDecisions'].includes(key)
+        : ['enableTailInjection', 'enableSubsystems', 'enableSkills', 'enableMemories', 'logDecisions', 'enableKeywordExpansion'].includes(key)
           ? typeof rawValue === 'boolean'
           : key === 'ignoreDirs'
             ? Array.isArray(rawValue) && rawValue.every((item) => typeof item === 'string')
             : typeof rawValue === 'number' && Number.isFinite(rawValue) &&
               (key === 'skillApplicabilityThreshold' || key === 'memoryApplicabilityThreshold'
                 ? rawValue > 0.5 && rawValue <= 1
-                : key === 'timeoutMs' ? Number.isSafeInteger(rawValue) && rawValue > 0
+                : (key === 'timeoutMs' || key === 'keywordTimeoutMs') ? Number.isSafeInteger(rawValue) && rawValue > 0
                 : ['maxMemoryGuards', 'maxInjectedMemoryGuards', 'maxInjectedSkills', 'memoryCandidateLimit', 'memoryCandidateTokens'].includes(key) ? Number.isSafeInteger(rawValue) && rawValue >= 0
                   : rawValue >= 0);
     if (!valid) {

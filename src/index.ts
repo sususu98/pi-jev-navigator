@@ -6,6 +6,7 @@ import { CodeGraphExtractor, isSystemRootOrHome } from './graph/codegraph.js';
 import { GitNexusAdapter } from './graph/gitnexus-adapter.js';
 import { SkillCollector } from './skills/collector.js';
 import { HermesMemoryRetriever } from './memory/hermes-retriever.js';
+import { GeminiKeywordExtractor } from './memory/gemini-keyword-extractor.js';
 import { TTLStore } from './cache/ttl-store.js';
 import { JevClient } from './jev/client.js';
 import { JevPrompter } from './jev/prompter.js';
@@ -27,6 +28,7 @@ export class JevNavigator {
   private gitnexus = new GitNexusAdapter();
   private collector: SkillCollector;
   private memoryRetriever: HermesMemoryRetriever;
+  private keywordExtractor: GeminiKeywordExtractor;
   private lastMemoryRetrieval?: MemoryRetrievalStats;
   private ttlStore: TTLStore;
   private client: JevClient;
@@ -41,6 +43,7 @@ export class JevNavigator {
     const active = this.configStore.get();
     this.collector = new SkillCollector(homeDir);
     this.memoryRetriever = new HermesMemoryRetriever(homeDir);
+    this.keywordExtractor = new GeminiKeywordExtractor(homeDir, transport);
     this.ttlStore = new TTLStore(this.projectRoot, active.cacheTtlDays);
     this.client = new JevClient(active.endpoint, active.model, active.apiKey, active.keyFilePath, homeDir, transport);
     this.pipeline = new JevDualPipeline(this.client, new JevPrompter());
@@ -100,6 +103,15 @@ export class JevNavigator {
     this.lastMemoryRetrieval = undefined;
     try {
       if (!this.hasApiKey() || options.signal?.aborted) return null;
+      let keywordPromise: Promise<{ terms: string[]; latencyMs: number; status: any }> | undefined;
+      if (config.enableMemories !== false && config.enableKeywordExpansion !== false) {
+        keywordPromise = this.keywordExtractor.extract(userPrompt, {
+          model: config.keywordModel,
+          timeoutMs: config.keywordTimeoutMs,
+          signal: options.signal,
+        });
+      }
+
       const graph = config.enableSubsystems !== false ? this.getOrGenerateCodeGraph() : { dsl: '', estimatedTokens: 0 };
       const skills: SkillSummary[] = [];
       if (config.enableSkills !== false) {
@@ -110,9 +122,20 @@ export class JevNavigator {
           if (!names.has(skill.name)) { skills.push(skill); names.add(skill.name); }
         }
       }
+
+      const keywordResult = keywordPromise ? await keywordPromise : undefined;
+
       const retrieval = config.enableMemories !== false
         ? this.memoryRetriever.retrieve(userPrompt, this.projectRoot, {
-          maxCandidates: config.memoryCandidateLimit, maxTokens: config.memoryCandidateTokens, signal: options.signal,
+          maxCandidates: config.memoryCandidateLimit,
+          maxTokens: config.memoryCandidateTokens,
+          signal: options.signal,
+          extraTerms: keywordResult?.terms,
+          keywordStats: keywordResult ? {
+            terms: keywordResult.terms,
+            latencyMs: keywordResult.latencyMs,
+            status: keywordResult.status,
+          } : undefined,
         }) : undefined;
       this.lastMemoryRetrieval = retrieval?.stats;
       const memories = retrieval?.memories ?? [];

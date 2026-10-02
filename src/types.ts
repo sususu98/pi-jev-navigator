@@ -102,6 +102,9 @@ export interface MemoryRetrievalStats {
   status: 'ready' | 'empty' | 'disabled' | 'unavailable' | 'unsupported' | 'cancelled';
   eligible: number; retrieved: number; candidates: number; selected: number;
   latencyMs: number; estimatedTokens: number; queries: number; budgetLimited: boolean;
+  keywordTerms?: string[];
+  keywordLatencyMs?: number;
+  keywordStatus?: 'ready' | 'bypassed' | 'timeout' | 'error';
 }
 
 export interface DispatchDecision {
@@ -161,6 +164,12 @@ export interface JevNavigatorConfig {
   memoryCandidateLimit?: number;
   /** Serialized independent Noul memory-question budget, estimated tokens (default 8000). */
   memoryCandidateTokens?: number;
+  /** Whether to use fast Gemini upstream to expand memory search queries (default true). */
+  enableKeywordExpansion?: boolean;
+  /** Upstream model for memory keyword expansion (default 'gemini-3.5-flash-lite'). */
+  keywordModel?: string;
+  /** Maximum time budget for memory keyword extraction before fallback (default 1200ms). */
+  keywordTimeoutMs?: number;
   cacheTtlDays?: number;
   logDecisions?: boolean;
   ignoreDirs?: string[];

@@ -1,4 +1,4 @@
-# ⚡ pi-jev-navigator
+# pi-jev-navigator
 
 Context routing for Pi Coding Agent using TypeSafe Jev: code directories, SOP skills, and Hermes memory guards are selected before the main agent runs.
 
@@ -34,7 +34,7 @@ Directory and skill candidates are sent in full: there is **no client-side keywo
 
 Memory routing uses a **read-only Hermes SQLite/FTS5 adapter**, not a full Markdown dump. It reads the configured Hermes `memoryDir` (including the legacy-directory alias) and separates global/current-project searches; linked worktrees inherit the main project identity. The adapter recognizes the `memories` + trigram `memory_fts` schema; Hermes currently exposes no stable extension-to-extension search API, so unknown schemas are bypassed rather than migrated or repaired.
 
-Bounded lexical queries use task identifiers and mechanical Chinese trigram segmentation, without topic dictionaries or hardcoded synonyms. Identifier conjunctions, contextual clauses and Chinese fragments produce candidate lists; per-view leaders and reciprocal-rank fusion preserve lexical diversity. Correction/preference, failure-store and general-memory channels are interleaved across both scopes. This is **candidate recall, not semantic relevance evaluation**: only Jev may select final tail constraints. Lexical wording gaps and budget omissions remain possible; this does not guarantee exhaustive recall.
+Bounded lexical queries use task identifiers and mechanical Chinese trigram segmentation, without topic dictionaries or hardcoded synonyms. Optional keyword expansion (`enableKeywordExpansion`, default enabled) invokes a lightweight upstream (`gemini-3.5-flash-lite`) over the native Gemini protocol (`/v1beta/models/...:generateContent`). This request enforces `thinkingBudget: 0` and `responseSchema` for pure JSON identifiers, using a constant `systemInstruction` and `X-Session-ID: jev-keyword-extractor` to anchor local CPA upstream connection pools. Extracted terms are quoted and merged into the SQLite query pool. An independent timeout (default 1,800ms) fails open in 0ms to base trigrams on any error or timeout. Identifier conjunctions, contextual clauses and Chinese fragments produce candidate lists; per-view leaders and reciprocal-rank fusion preserve lexical diversity. Correction/preference, failure-store and general-memory channels are interleaved across both scopes. This is **candidate recall, not semantic relevance evaluation**: only Jev may select final tail constraints. Lexical wording gaps and budget omissions remain possible; this does not guarantee exhaustive recall.
 
 `memoryCandidateLimit` defaults to **64** and `memoryCandidateTokens` to **8K estimated tokens** for the complete serialized independent Noul memory questions. Whole records that do not fit are omitted, never clipped; candidate limits are separate from `maxInjectedMemoryGuards` (default **3**). Stable SQLite IDs deduplicate results without merging similar rules, and every retrieval sees a fresh read transaction. A missing, incompatible, corrupt, empty or locked database returns no memory candidates, **never a whole-Markdown fallback**; graph/skill routing may still proceed. The old Markdown collector remains only for standalone compatibility. No database writes, synchronization, consolidation or pinned-instruction re-injection occurs.
 
@@ -44,7 +44,7 @@ Cards/status/telemetry distinguish eligible store size, unique retrieved results
 
 Request-local injection must also preserve **the entire historical wire prefix**, not just the system prompt. A user message that was sent with a navigation tail must retain that exact tail on every subsequent request. Navigator freezes the complete guidance string once (including Skill paths and complete Memory rules; telemetry is human-only) in a `jev-navigation-tail-v1` custom entry through `pi.appendEntry()`. These entries are not model messages; the raw user transcript stays untouched. Replay follows `getBranch()` and native message provenance, with entry IDs, timestamps and canonical content fingerprints. It never re-evaluates or reformats old packets. The initial user keeps its own tail even when steering arrives before the first request; steering never inherits that decision. Metadata publication failures freeze an empty tail, including when the host updates its in-memory tree before a disk write throws. If skill-policy metadata was not saved, reload recovers its omission state from existing structured system history where available. Older unstructured histories cannot prove that state; start a fresh session for a clean invariant.
 
-New routing failures, disabled routing, steering and idle/cancelled contexts do not remove earlier tails. Reload/resume restores them from the session tree; compaction replays only messages still present. Empty decisions are frozen too, and failed metadata persistence cannot publish a transient new tail. The same 256Ki-character guidance limit applies before publication and during replay: an oversized combined tail freezes absence rather than clipping constraints or emitting an unreplayable packet. A host that completely unloads the extension cannot replay its metadata. Old sessions created before this fix have no frozen packets: their exact missing tails cannot be invented, so the first request after upgrading may rebuild cache. Other extensions, model changes and upstream cache eviction can still invalidate cache independently.
+New routing failures, disabled routing, steering and idle/cancelled contexts do not remove earlier tails. Mid-run steering prompts submitted during tool execution or model streaming are intercepted via `pi.on('input')`, evaluated in the background, bound to their own user turn in `context_with_system`, and frozen independently in the session ledger. Reload/resume restores them from the session tree; compaction replays only messages still present. Empty decisions are frozen too, and failed metadata persistence cannot publish a transient new tail. The same 256Ki-character guidance limit applies before publication and during replay: an oversized combined tail freezes absence rather than clipping constraints or emitting an unreplayable packet. A host that completely unloads the extension cannot replay its metadata. Old sessions created before this fix have no frozen packets: their exact missing tails cannot be invented, so the first request after upgrading may rebuild cache. Other extensions, model changes and upstream cache eviction can still invalidate cache independently.
 
 ### Auto routing and capacity
 
@@ -54,7 +54,7 @@ Every outgoing request is checked against the estimated **32K per-request** and 
 
 Cards, status and `/jev-eval` display **Unified versus Parallel** and per-track actual API input usage. Batched usage is explicitly labeled as an aggregate across requests. Telemetry stores estimated payload/track tokens separately from actual usage; two tracks never share a single 64K window.
 
-All batches and arbitration rounds share a deadline of at most **1,500ms** and a global four-request concurrency limit. `timeoutMs` can reduce this budget, not increase it. Headers **and the response body** are bounded, cancellation propagates and responses are limited to 4 MiB. Local graph/skill/memory collection happens before this deadline and still includes synchronous filesystem/Git work; successful decision latency includes that collection, but this is not an end-to-end latency guarantee.
+All batches and arbitration rounds share a default deadline of **1,500ms** with a hard ceiling of **3,000ms**, respecting configured `timeoutMs` budgets up to 3,000ms, and a global four-request concurrency limit. Headers **and the response body** are bounded, cancellation propagates and responses are limited to 4 MiB. Local graph/skill/memory collection happens before this deadline and still includes synchronous filesystem/Git work; successful decision latency includes that collection, but this is not an end-to-end latency guarantee.
 
 ### Graph implementations
 
@@ -126,9 +126,12 @@ Project-local secret-file auto-discovery is intentionally disabled. `/jev-config
   "enableSubsystems": true,
   "enableSkills": true,
   "enableMemories": true,
+  "enableKeywordExpansion": true, // optional fast Gemini native keyword expansion
+  "keywordModel": "gemini-3.5-flash-lite", // native protocol + 0 thinking + session affinity
+  "keywordTimeoutMs": 1800, // independent extraction timeout before falling back
 
   "executionMode": "auto", // auto | parallel | unified
-  "timeoutMs": 1500,
+  "timeoutMs": 3000, // routing deadline budget (default 1500, max 3000)
   "memoryCandidateLimit": 64, // bounded local recall, hard ceiling 254
   "memoryCandidateTokens": 8000, // estimated serialized memory-question budget (8K)
   "maxInjectedSkills": 3, // independently applicable SOP tail output limit
@@ -203,5 +206,5 @@ For example, a documentation task may independently select `documentation-style`
 `link-checking`, each with its complete SOP path in the tail. Only metadata is sent for
 skills; the agent reads selected SOP bodies on demand. Memory evaluation and tails retain
 complete guidance. Every request is estimated separately against **32K**, and all batches
-share the **1500ms** deadline and global worker limit. More questions increase payload and
+share the default **1500ms** deadline (configurable up to **3000ms**) and global worker limit. More questions increase payload and
 may require more batches; estimates are not a service-tokenizer guarantee.

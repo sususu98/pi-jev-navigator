@@ -3,7 +3,7 @@
 
 `pi-jev-navigator` is a TypeSafe Jev (`jev-latest`) System One navigation and context governance extension for Pi Coding Agent. It provides compact CodeGraph overview routing, tail navigation injection, Hermes memory guard protection, dual-pipeline execution, and Git Worktree awareness.
 
-## 🎯 Core Product Goal
+## Core Product Goal
 
 Support **Pi + Hermes Memory with large-scale Skill and Memory catalogs**. Jev must quickly identify the SOP skills and memory constraints relevant to the current task, then append compact, actionable guidance to the **user prompt's trailing context** so the main agent can act precisely instead of repeatedly exploring or rediscovering known procedures.
 
@@ -13,13 +13,13 @@ Support **Pi + Hermes Memory with large-scale Skill and Memory catalogs**. Jev m
 
 ---
 
-## 🛠️ Build, Test & Packaging Commands
+## Build, Test & Packaging Commands
 
 ```bash
 # Build complete extension (TypeScript bundle, .d.ts types, and 6-platform native Go AST binaries)
 bun run build
 
-# Run complete automated test suite (59 unit & integration tests across 7 test suites)
+# Run complete automated test suite (161 unit & integration tests across 19 test suites)
 bun test
 
 # Verify package metadata, native cross-platform binaries, and Node.js runtime compatibility
@@ -28,7 +28,7 @@ node scripts/check-package.mjs
 
 ---
 
-## 🏛️ Core Architecture & Inviolable Invariants
+## Core Architecture & Inviolable Invariants
 
 ### 1. Prefix Cache Invariant (System Prompt Purity — Inviolable Forbidden Zone)
 * **System Prompt is an inviolable forbidden zone — NEVER mutate or modify it dynamically**: Once a session starts, the Leading System Prompt must remain **100% bit-for-bit identical across all turns**. It is strictly forbidden to rewrite, regex-prune, filter, or dynamically add/remove system prompt content in any lifecycle hook (`before_agent_start`, `context_with_system`, etc.).
@@ -36,12 +36,14 @@ node scripts/check-package.mjs
 * **Turn-invariant native skill policy**: Freeze the catalog policy on the first prompt in a non-context `jev-skill-policy-v1` session entry. Sessions started with skill routing enabled omit native skills (`[]`) before all routing early returns, including missing credentials, failure, bypass and cancellation. Sessions started with routing disabled retain the host catalog. Reload, branch navigation and mid-session config/flag changes must not flip this policy; start a new session to change it. This protects Jev-owned prompt state, not changes made by other extensions or provider adapters.
 * **All dynamic guidance MUST strictly use Tail Injection**: Dynamic navigation packets (Target Subsystem, Recommended SOP Skill, Active Memory Guard, Risk Score) must **strictly and exclusively be appended to the user prompt's trailing context (`TailInjector`)**. The model loads recommended SOP skills on demand via standard `read` tool calls into the conversation flow, never by mutating leading system prompts.
 * **Historical wire prefix invariant**: request-local tails must remain present, byte-for-byte, on their original user messages in every subsequent request. Freeze the complete tail once in non-context session custom entries (`jev-navigation-tail-v1`) via `pi.appendEntry()`; replay them bit-for-bit on the active branch during `context_with_system`. Never strip or recalculate old tails on settle, new prompts, bypass/disable, reload or resume. Cross-run Skill/SOP/tool-history prefix equality is a mandatory regression test.
+* **Mid-run steering prompt isolation**: prompts submitted while models or tools run (`streamingBehavior` in `pi.on('input')`) evaluate concurrently in background without blocking the terminal. Guidance attaches strictly to that steering user message in `context_with_system` and freezes independently in the session ledger, never altering historical prefixes or leading system prompts.
 
 ### 2. Jev Relevance Evaluation, Skill Metadata & Memory Scope
 * **Strictly forbidden**: Never hardcode client-side keyword regexes, manual topic cluster heuristics (e.g. `if (title.includes('grep'))`), or heuristic skill/directory slicing to guess task relevance. Jev performs relevance evaluation.
 * **Skill metadata only**: send names, descriptions and locations to Jev; do not include complete SKILL.md bodies in routing requests. A selected skill's name/path and an instruction to read the complete SOP are valid tail guidance, not a missing feature.
 * **Memory scope**: consider global memories and the current project's memories, including canonical project inheritance for linked worktrees. Exclude memories belonging to unrelated projects. This is required scope isolation, not prohibited semantic pre-filtering.
 * **Hermes retrieval boundary**: scope eligibility is not permission to transmit the entire corpus. Use read-only SQLite/FTS5 lexical recall across global/current-project scopes, then bound candidates by count and serialized token budget before Jev. Generic tokenization, trigram queries, category channels and rank fusion are allowed retrieval mechanics, not client-side semantic relevance claims. No hardcoded topical keywords/synonym maps and no whole-corpus fallback on misses/errors.
+* **Gemini keyword expansion with session affinity**: optional pre-retrieval keyword extraction uses `gemini-3.5-flash-lite` over the native Gemini protocol (`/v1beta/models/...:generateContent`). Must enforce `thinkingBudget: 0` and `responseSchema` for pure JSON terms, accompanied by constant `systemInstruction` and `X-Session-ID: jev-keyword-extractor` to anchor local CPA upstream connection pools and avoid cross-account proxy drift. Independent bounded timeout (default 1,800ms) fails open in 0ms back to baseline trigram lexical queries on any error or timeout.
 * Objective metadata (Recency, Project Scope, Category Hierarchy) may organize eligible candidates, but metadata rank alone is not proof of task relevance. Distinguish eligible corpus, retrieved candidates and final injected set.
 * **Precise memory injection**: inject only the memory constraints most relevant to the current task. Do not append the whole memory corpus or unrelated rules merely because they are available.
 
@@ -57,7 +59,7 @@ node scripts/check-package.mjs
 * Fast routing is a product goal, not an unverified fixed ~450ms guarantee. Measure local collection plus API evaluation and injection when reporting end-to-end latency.
 
 ### 4. Fail-Open Timeout & Resilience
-* Hard timeout of **1,500ms** enforced on all Jev API requests.
+* Default timeout of **1,500ms** with a hard ceiling of **3,000ms** enforced on all Jev API requests. User-configured `timeoutMs` up to 3,000ms is respected.
 * Any network jitter, API error, or timeout must fail open immediately in **0ms**, allowing the main agent to proceed without interruption while logging `bypassed: true`.
 
 ### 5. Security & Scope Boundaries
@@ -70,7 +72,7 @@ node scripts/check-package.mjs
 
 ---
 
-## 📋 General Tooling & Coding Defaults
+## General Tooling & Coding Defaults
 
 * **Tooling Rules**: Always use `fd` (never `find`), `rg` (never `grep`), and `lsof` for process/port checks.
 * **No Micro-Reading**: Forbid repetitive fixed-step micro-reading (e.g. 50-line chunks dozens of times). Locate symbols and line numbers with `rg` first, then read adequate chunks directly.
