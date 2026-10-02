@@ -32,7 +32,7 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   memoryCandidateTokens: 8000,
   enableKeywordExpansion: true,
   keywordModel: 'gemini-3.5-flash-lite',
-  keywordTimeoutMs: 1800,
+  keywordTimeoutMs: 1200,
   cacheTtlDays: 7,
   logDecisions: true,
   ignoreDirs: [
