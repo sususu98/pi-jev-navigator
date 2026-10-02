@@ -124,6 +124,110 @@ describe('read-only Hermes retrieval', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('invalid SQLite');
   });
 
+  it('recalls late identifiers, compound filenames and acronym boundaries without aliases', () => {
+    makeHermesDatabase(home, [
+      { content: 'signature safety isolation', project: 'CPA' },
+      { content: 'Response payload contract', project: 'CPA' },
+      { content: 'thought signature must remain bound', project: 'CPA' },
+    ]);
+    const retriever = new HermesMemoryRetriever(home);
+    const tasks = [
+      '请在 worktree 阅读 AGENTS.md 然后使用 CPA 修复 signature',
+      '/Users/example/workspace/project/.worktrees/branch docs/long-design-file.md internal/cache/thought_signature.go',
+      'Please inspect HTTPResponseSignature',
+      'Please inspect thought-signature',
+      `${Array.from({ length: 80 }, (_, i) => `prefix${i}`).join(' ')} thought_signature`,
+      `只读审查 ${'工程验证运行测试 '.repeat(1500)} thought_signature`,
+    ];
+    for (const task of tasks) {
+      const result = retriever.retrieve(task, root);
+      expect(result.memories.some(memory => memory.rule.includes('signature'))).toBe(true);
+      expect(buildMemoryQueries(task).length).toBeLessThanOrEqual(32);
+    }
+    expect(retriever.retrieve('HTTPResponseSignature', root).memories.some(memory => memory.rule.includes('Response'))).toBe(true);
+  });
+
+  it('retains late Chinese lexical evidence in bounded distributed windows', () => {
+    makeHermesDatabase(home, [{ content: '磁盘队列刷新必须原样回放', project: 'CPA' }]);
+    const task = `只读 ${'工程验证运行测试 '.repeat(1500)} 修复磁盘队列刷新`;
+    expect(new HermesMemoryRetriever(home).retrieve(task, root).memories).toHaveLength(1);
+  });
+
+  it('plans view coverage before long boilerplate spends the serialized budget', () => {
+    makeHermesDatabase(home, [
+      { content: `worktree guard ${'whole generic rule '.repeat(300)}`, category: 'correction' },
+      { content: `worktree general ${'whole generic rule '.repeat(300)}` },
+      { content: 'Quasar capsule binding must not cross tenants', project: 'CPA' },
+      { content: 'Quasar capsule FIFO refresh does not expire', project: 'CPA', category: 'correction' },
+    ]);
+    const result = new HermesMemoryRetriever(home).retrieve('worktree AGENTS.md internal/cache/Quasar_capsule.go', root, { maxTokens: 1800 });
+    expect(result.memories.some(memory => memory.rule.includes('binding'))).toBe(true);
+    expect(result.memories.some(memory => memory.rule.includes('FIFO'))).toBe(true);
+    expect(result.stats.estimatedTokens).toBeLessThanOrEqual(1800);
+    expect(result.stats.budgetLimited).toBe(true);
+  });
+
+  it('keeps keyword and baseline sources bounded and records candidate index identities', () => {
+    makeHermesDatabase(home, [
+      { content: 'Orchid capsule storage', project: 'CPA' },
+      { content: 'worktree boundary', category: 'correction' },
+      { content: 'Orchid capsule FOREIGN_SECRET', project: 'other' },
+    ]);
+    const result = new HermesMemoryRetriever(home).retrieve('worktree', root, { extraTerms: ['Orchid_capsule'] });
+    expect(result.memories.some(memory => memory.rule.includes('storage'))).toBe(true);
+    expect(result.memories.some(memory => memory.rule.includes('boundary'))).toBe(true);
+    expect(result.stats.candidateIds).toEqual(result.memories.map(memory => memory.id));
+    expect(JSON.stringify(result)).not.toContain('FOREIGN_SECRET');
+    expect(result.stats.estimatedTokens).toBeLessThanOrEqual(8000);
+  });
+
+  it('leaves recalled memory uninjected when Jev rejects all applicability signals', async () => {
+    makeHermesDatabase(home, [{ content: 'Quasar capsule complete constraint', project: 'CPA' }]);
+    const nav = new JevNavigator(root, { apiKey: 'FAKE', enableSkills: false, enableSubsystems: false,
+      enableKeywordExpansion: false, logDecisions: false }, home, (async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      const response = responseFor(request);
+      for (const id of Object.keys(request.questions).filter(id => id.startsWith('q5_memory_'))) {
+        response.answers[id] = { type: 'noul', noul: 0.1 };
+      }
+      return Response.json(response);
+    }) as typeof fetch);
+    const result = await nav.processUserPrompt('Quasar_capsule.go');
+    expect(result.decision?.memoryRetrieval?.candidates).toBe(1);
+    expect(result.decision?.activatedMemoryGuards).toEqual([]);
+    expect(result.enrichedPrompt).not.toContain('complete constraint');
+  });
+
+  it('does not let a full keyword query catalog replace the baseline task', () => {
+    makeHermesDatabase(home, [{ content: 'Quasar must preserve capsule binding', project: 'CPA' }]);
+    const extras = Array.from({ length: 6 }, (_, i) => `alpha${i}_beta${i}_gamma${i}_delta${i}`);
+    const result = new HermesMemoryRetriever(home).retrieve('Quasar', root, { extraTerms: extras });
+    expect(result.memories).toHaveLength(1);
+    expect(result.stats.queries).toBeLessThanOrEqual(384);
+  });
+
+  it('keeps directory identifiers and non-Latin Unicode words searchable', () => {
+    makeHermesDatabase(home, [
+      { content: 'WebSocket reconnect scope must be isolated', project: 'CPA' },
+      { content: 'авторизация сохраняет область клиента', project: 'CPA' },
+    ]);
+    const retriever = new HermesMemoryRetriever(home);
+    expect(retriever.retrieve('internal/WebSocket/config.go', root).memories.some(memory => memory.rule.includes('WebSocket'))).toBe(true);
+    expect(retriever.retrieve('авторизация', root).memories.some(memory => memory.rule.includes('авторизация'))).toBe(true);
+  });
+
+  it('recalls a later correction beyond a crowded lexical top-20 view', () => {
+    makeHermesDatabase(home, [
+      ...Array.from({ length: 30 }, (_, i) => ({ content: `Orchid capsule old constraint ${i}`,
+        project: 'CPA', category: 'correction', created: '2020-01-01' })),
+      { content: `Orchid capsule latest correction ${'complete later constraint '.repeat(30)}`,
+        project: 'CPA', category: 'correction', created: '2026-10-02' },
+    ]);
+    const result = new HermesMemoryRetriever(home).retrieve('Orchid_capsule', root);
+    expect(result.memories.some(memory => memory.rule.includes('latest correction'))).toBe(true);
+    expect(result.stats.estimatedTokens).toBeLessThanOrEqual(8000);
+  });
+
   it('quotes lexical queries, bounds input and honors cancellation/zero budgets', () => {
     expect(buildMemoryQueries('CPA " OR NOT ; DROP TABLE memories --')).not.toEqual([]);
     expect(buildMemoryQueries('汉字')).toEqual([]); // trigram cannot index two-character terms

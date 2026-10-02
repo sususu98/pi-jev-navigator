@@ -1,22 +1,52 @@
 import type { JevQuestion, JevSystemOneRequest } from '../types.js';
 
 export const BYTES_PER_TOKEN = 2.85;
-export const AUTO_SPLIT_TOKENS = 28000;
-export const MAX_REQUEST_TOKENS = 32000;
+// Jev 1.13: 64K state + all questions; 32K state + the longest question.
+// Retain 12.5% headroom on both dimensions; estimates are not an exact tokenizer.
+export const MAX_REQUEST_TOKENS = 56000;
+export const MAX_WINDOW_TOKENS = 28000;
 export const MAX_CHOICE_OPTIONS = 255; // includes the none/standard sentinel
 export type RoutingRequest = Omit<JevSystemOneRequest, 'model'>;
 
+export interface RequestCapacityEstimate {
+  totalTokens: number; windowTokens: number; stateTokens: number; longestQuestionTokens: number;
+  wireBytes: number; questionCount: number;
+}
+
+/** Two independent dimensions, not one concatenated 32K context.
+ * Official API docs exclude question IDs from inference. Keep model/envelope bytes
+ * conservatively, but question-map keys must not cause arbitrary capacity changes.
+ */
+export function estimateRequestCapacity(request: RoutingRequest, model: string): RequestCapacityEstimate {
+  const questions = Object.values(request.questions);
+  const stateBytes = Buffer.byteLength(JSON.stringify(request.state), 'utf8');
+  const questionBytes = questions.map(question => Buffer.byteLength(JSON.stringify(question), 'utf8'));
+  const longest = Math.max(0, ...questionBytes);
+  const envelopeBytes = Buffer.byteLength(JSON.stringify({ model, state: request.state, questions: [] }), 'utf8');
+  const totalBytes = envelopeBytes + questionBytes.reduce((sum, bytes) => sum + bytes, 0)
+    + Math.max(0, questions.length - 1);
+  return {
+    totalTokens: Math.ceil(totalBytes / BYTES_PER_TOKEN),
+    windowTokens: Math.ceil((envelopeBytes + longest) / BYTES_PER_TOKEN),
+    stateTokens: Math.ceil(stateBytes / BYTES_PER_TOKEN),
+    longestQuestionTokens: Math.ceil(longest / BYTES_PER_TOKEN),
+    wireBytes: Buffer.byteLength(JSON.stringify({ model, ...request }), 'utf8'),
+    questionCount: questions.length,
+  };
+}
+
 export function estimateRequestTokens(request: RoutingRequest, model: string): number {
-  return Math.ceil(Buffer.byteLength(JSON.stringify({ model, ...request }), 'utf8') / BYTES_PER_TOKEN);
+  return estimateRequestCapacity(request, model).totalTokens;
 }
 
 export function fitsRequest(request: RoutingRequest, model: string): boolean {
-  return estimateRequestTokens(request, model) <= MAX_REQUEST_TOKENS &&
+  const estimate = estimateRequestCapacity(request, model);
+  return estimate.totalTokens <= MAX_REQUEST_TOKENS && estimate.windowTokens <= MAX_WINDOW_TOKENS &&
     Object.values(request.questions).every((q) => q.type !== 'choice' || Object.keys(q.criteria).length <= MAX_CHOICE_OPTIONS);
 }
 
 export function assertRequestCapacity(request: RoutingRequest, model: string): void {
-  if (!fitsRequest(request, model)) throw new Error('Jev request exceeds estimated 32K context or 255-choice capacity');
+  if (!fitsRequest(request, model)) throw new Error('Jev request exceeds capacity: 56K total / 28K state + longest question safe budgets, or 255-choice limit');
 }
 
 /** Split complete independent questions; only the legacy safety choice needs option partitioning. */
@@ -39,7 +69,9 @@ export function partitionCatalog(request: RoutingRequest, model: string): Routin
       questions[id] = previous?.type === 'choice' && question.type === 'choice'
         ? { ...question, criteria: { ...previous.criteria, ...question.criteria } } : question;
     }
-    return { state: request.state, questions };
+    const state = { ...request.state };
+    if (!items.some(item => item.id.startsWith('q2_skill_'))) delete state.skill_policy;
+    return { state, questions };
   };
   const split = (items: typeof units): RoutingRequest[] => {
     const chunk = make(items);

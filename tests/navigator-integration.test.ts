@@ -133,6 +133,26 @@ describe('JevNavigator integration', () => {
     }
   });
 
+  it('logs completed request usage on bypass without candidate bodies or credentials', () => {
+    const home = tempDir('jev-home-');
+    const project = tempDir('jev-project-');
+    try {
+      const nav = new JevNavigator(project, { apiKey: 'PRIVATE_CALIBRATION_KEY', logDecisions: true }, home, offlineTransport);
+      const usage = { track: 'overview' as const, model: 'jev-1.13.0', inputTokens: 1234, outputTokens: 21,
+        latencyMs: 12, totalTokens: 1400, windowTokens: 1300, stateTokens: 1200, longestQuestionTokens: 100,
+        wireBytes: 4000, questionCount: 2 };
+      nav.logDecisionToFile('calibration task', { bypassed: true, bypassReason: 'HTTP 503', requestUsage: [usage] }, { sessionId: 'partial-usage' });
+      const slug = `--${project.replace(/^\/+/, '').replace(/\/+/g, '-')}--`;
+      const log = fs.readFileSync(path.join(home, '.pi/agent/jev-sessions', slug, 'partial-usage.jsonl'), 'utf8');
+      const entry = JSON.parse(log.trim());
+      expect(entry.bypassed).toBe(true);
+      expect(entry.request_usage).toEqual([usage]);
+      expect(entry.completed_input_tokens).toBe(1234);
+      expect(log).not.toContain('PRIVATE_CALIBRATION_KEY');
+      expect(entry.activated_memory_guards).toBeUndefined();
+    } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(project, { recursive: true, force: true }); }
+  });
+
   it('logDecisionToFile records activatedMemoryGuards, tokenBreakdown, permissions 0700/0600, path traversal sanitized, and multiple logs preserved', async () => {
     const home = tempDir('jev-home-');
     const project = tempDir('jev-project-');

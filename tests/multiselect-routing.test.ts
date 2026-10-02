@@ -35,9 +35,10 @@ describe('independent Skill / Memory applicability', () => {
       expect(question.type).toBe('noul');
       expect(question).not.toHaveProperty('statement');
       const q = question as any;
-      expect(Object.keys(q.instructions).sort()).toEqual(['boundary', 'candidate', 'question']);
+      expect(Object.keys(q.instructions).sort()).toEqual(id.startsWith('q2_skill_')
+        ? ['candidate', 'question'] : ['boundary', 'candidate', 'question']);
       expect(typeof q.instructions.question).toBe('string');
-      expect(typeof q.instructions.boundary).toBe('string');
+      if (id.startsWith('q5_memory_')) expect(typeof q.instructions.boundary).toBe('string');
       expect(Object.keys(q.criteria).sort()).toEqual(['false', 'true']);
       expect(typeof q.criteria.true).toBe('string');
       expect(typeof q.criteria.false).toBe('string');

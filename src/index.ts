@@ -147,7 +147,8 @@ export class JevNavigator {
         decision.memoryRetrieval = retrieval.stats;
       }
       if (!decision || decision.bypassed) {
-        this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision?.bypassReason ?? 'timeout_or_error', latency_ms: Date.now() - started, memory_retrieval: retrieval?.stats }, sessionMeta);
+        this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision?.bypassReason ?? 'timeout_or_error', latency_ms: Date.now() - started, memory_retrieval: retrieval?.stats,
+          request_usage: decision?.requestUsage, completed_input_tokens: decision?.requestUsage?.reduce((sum, request) => sum + request.inputTokens, 0) }, sessionMeta);
         return null;
       }
       decision.latencyMs = Date.now() - started; // include local catalog/graph collection
@@ -190,13 +191,15 @@ export class JevNavigator {
 
   public logDecisionToFile(userPrompt: string, decision: DispatchDecision, sessionMeta?: SessionMeta): void {
     if (decision.bypassed) {
-      this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision.bypassReason }, sessionMeta);
+      this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision.bypassReason,
+        request_usage: decision.requestUsage, completed_input_tokens: decision.requestUsage?.reduce((sum, request) => sum + request.inputTokens, 0) }, sessionMeta);
       return;
     }
     const guards = decision.activatedMemoryGuards ?? (decision.activatedMemoryGuard ? [decision.activatedMemoryGuard] : []);
     this.writeTelemetry(userPrompt, {
       latency_ms: decision.latencyMs, input_tokens: decision.inputTokens,
       pipeline_mode: decision.pipelineMode, token_breakdown: decision.tokenBreakdown,
+      request_usage: decision.requestUsage, estimated_capacity: decision.estimatedCapacity,
       memory_retrieval: decision.memoryRetrieval,
       estimated_payload_tokens: decision.estimatedPayloadTokens, estimated_track_tokens: decision.estimatedTrackTokens,
       target_subsystems: decision.targetSubsystems,

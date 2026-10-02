@@ -2,9 +2,9 @@ import type {
   DispatchDecision, JevNavigatorConfig, SkillSummary, MemoryGuard, JevAnswer,
 } from '../types.js';
 import { JevClient } from './client.js';
-import { JevPrompter } from './prompter.js';
+import { JevPrompter, SKILL_EVALUATION_POLICY } from './prompter.js';
 import {
-  AUTO_SPLIT_TOKENS, assertRequestCapacity, estimateRequestTokens, fitsRequest,
+  assertRequestCapacity, estimateRequestTokens, estimateRequestCapacity, fitsRequest,
   partitionCatalog, partitionOverview, type RoutingRequest,
 } from './capacity.js';
 
@@ -64,6 +64,7 @@ export class JevDualPipeline {
     const deadline = t0 + budget;
     const timer = setTimeout(() => controller.abort(new Error('Jev routing deadline exceeded')), budget);
     // Shared across both tracks and all capacity batches, not four workers per track.
+    const requestUsage: NonNullable<DispatchDecision['requestUsage']> = [];
     let active = 0;
     const waiters: Array<() => void> = [];
     const dispatch: Dispatch = async (request) => {
@@ -74,7 +75,12 @@ export class JevDualPipeline {
         const remaining = deadline - Date.now();
         if (remaining <= 0) throw new Error('Jev routing deadline exceeded');
         assertRequestCapacity(request, this.client.getModel());
+        const estimate = estimateRequestCapacity(request, this.client.getModel());
         const result = await this.client.evaluate(request, remaining, requestSignal);
+        requestUsage.push({ ...estimate, model: result.response.model,
+          track: request.state.codebase_trie_map ? 'overview' : 'catalog',
+          inputTokens: result.response.usage.input_tokens, outputTokens: result.response.usage.output_tokens,
+          latencyMs: result.latencyMs });
         return { answers: result.response.answers, tokens: result.response.usage.input_tokens, requests: 1 };
       } finally {
         const next = waiters.shift();
@@ -91,13 +97,14 @@ export class JevDualPipeline {
       if (!hasOverview) delete questions.q1_target_subsystem;
       const model = this.client.getModel();
       const unified: RoutingRequest = {
-        state: { user_task: inputs.userPrompt, ...(hasOverview ? { codebase_trie_map: dsl } : {}) }, questions,
+        state: { user_task: inputs.userPrompt, ...(hasOverview ? { codebase_trie_map: dsl } : {}),
+          ...(skills.length ? { skill_policy: SKILL_EVALUATION_POLICY } : {}) }, questions,
       };
       const estimatedPayloadTokens = estimateRequestTokens(unified, model);
       const hasCatalog = skills.length > 0 || memories.length > 0 || inputs.safetyRules.length > 0;
       const mode = config.executionMode ?? 'auto';
       const parallel = hasOverview && hasCatalog && (mode === 'parallel' ||
-        (mode === 'auto' && (estimatedPayloadTokens > AUTO_SPLIT_TOKENS || !fitsRequest(unified, model))));
+        (mode === 'auto' && !fitsRequest(unified, model)));
       let overview: TrackResult | undefined;
       let catalog: TrackResult | undefined;
       let combined: TrackResult | undefined;
@@ -108,7 +115,7 @@ export class JevDualPipeline {
           questions: { q1_target_subsystem: questions.q1_target_subsystem, q4_complexity_risk: questions.q4_complexity_risk },
         };
         const b: RoutingRequest = {
-          state: { user_task: inputs.userPrompt },
+          state: { user_task: inputs.userPrompt, ...(skills.length ? { skill_policy: SKILL_EVALUATION_POLICY } : {}) },
           questions: Object.fromEntries(Object.entries(questions).filter(([id]) => id !== 'q1_target_subsystem' && id !== 'q4_complexity_risk')),
         };
         const aBatches = partitionOverview(a, model);
@@ -133,6 +140,8 @@ export class JevDualPipeline {
         Date.now() - t0, tokens, memories, inputs.safetyRules, config.maxInjectedMemoryGuards ?? 3, config.maxInjectedSkills ?? 3,
         config.skillApplicabilityThreshold, config.memoryApplicabilityThreshold,
       );
+      decision.requestUsage = requestUsage.map(usage => ({ ...usage, track: parallel ? usage.track : 'unified' }));
+      decision.estimatedCapacity = estimateRequestCapacity(unified, model);
       decision.pipelineMode = parallel ? 'parallel' : 'unified';
       decision.estimatedPayloadTokens = estimatedPayloadTokens;
       decision.estimatedTrackTokens = estimatedTrackTokens;
@@ -143,7 +152,8 @@ export class JevDualPipeline {
       } : { totalTokens: tokens, totalRequests: combined!.requests };
       return decision;
     } catch (error) {
-      return { bypassed: true, bypassReason: error instanceof Error ? error.message : 'Jev evaluation failed', latencyMs: Date.now() - t0 };
+      return { bypassed: true, bypassReason: error instanceof Error ? error.message : 'Jev evaluation failed',
+        latencyMs: Date.now() - t0, requestUsage: [...requestUsage] };
     } finally {
       clearTimeout(timer);
       controller.abort(); // cancel siblings and queued work on any failure

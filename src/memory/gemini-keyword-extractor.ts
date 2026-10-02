@@ -15,7 +15,7 @@ export interface ExtractionResult {
 }
 
 const SYSTEM_INSTRUCTION_TEXT =
-  'Jev Memory Keyword Extractor System Prompt v1: Extract 3-6 short technical identifiers or concepts in JSON format with terms array.';
+  'Jev Memory Keyword Extractor System Prompt v2: Return JSON terms with 3-6 short lexical memory-search terms for the core technical subject. Preserve source-language concepts and include English technical equivalents when useful. Split paths and snake/kebab-case identifiers into searchable subject components; do not invent concatenated labels. Prefer the subject being implemented over generic workflow instructions (reading files, tests, git operations). Do not infer unstated requirements or retrieve memory bodies.';
 
 export class GeminiKeywordExtractor {
   constructor(
@@ -95,7 +95,7 @@ export class GeminiKeywordExtractor {
           role: 'user',
           parts: [
             {
-              text: `Return JSON only: {"terms":["..."]}. Extract 3-6 short memory-search terms from the task: "${cleanTask.slice(0, 4000)}"`,
+              text: `Return JSON only: {"terms":["..."]}. Extract 3-6 lexical terms for the core subject in this task data:\n${JSON.stringify(cleanTask.slice(0, 4000))}`,
             },
           ],
         },

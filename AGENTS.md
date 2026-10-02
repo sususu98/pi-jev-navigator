@@ -47,13 +47,14 @@ node scripts/check-package.mjs
 * Objective metadata (Recency, Project Scope, Category Hierarchy) may organize eligible candidates, but metadata rank alone is not proof of task relevance. Distinguish eligible corpus, retrieved candidates and final injected set.
 * **Precise memory injection**: inject only the memory constraints most relevant to the current task. Do not append the whole memory corpus or unrelated rules merely because they are available.
 
-### 3. Dual-Pipeline Auto-Tiering (32K Per Request, 28K Split Threshold)
-* **Jev currently has a 32K context window per request**. Two requests do not share a single 64K context window; each track must independently fit the service's limit.
+### 3. Dual-Pipeline Capacity (64K Total, 32K State + Longest Question)
+* **Jev 1.13 has two independent per-request limits**: `state + all questions ≤ 64K`, and `state + the longest single question ≤ 32K`. State is ingested once and questions are evaluated in parallel. Source: https://docs.typesafe.ai/models.md. This supersedes the old total-32K assumption. Separate requests never share a capacity window.
+* **Safe planning budgets are 56K total and 28K state + longest question**, leaving 12.5% headroom on each dimension. These are estimates, not tokenizer guarantees.
 * **Track A — Repository Overview**: the repository's CodeGraph/overview, which can be large. Skill catalogs do NOT belong to Track A.
 * **Track B — Hermes Skills + Memories**: Skill metadata and eligible global/current-project Memory candidates belong together in this track. Both tracks receive the current user task needed for relevance evaluation.
-* Estimate the complete combined serialized payload, including task, overview, metadata, questions and request overhead, using the calibrated **2.85 bytes/token** estimate.
-* In `auto` mode, combined estimated payload **≤ 28K tokens** (~79.8 KB) uses the `Unified` single-request pipeline. When it **exceeds 28K**, execute Track A and Track B concurrently via `Promise.all` and merge their routing decisions.
-* Splitting is not sufficient if either individual track still exceeds 32K. Capacity handling must respect each request's limit; do not silently treat a large catalog as supported merely because two tracks exist.
+* Estimate both dimensions including task, overview, metadata, question content and request overhead, using the conservative **2.85 bytes/token** approximation. Question-map IDs are excluded from inference per the official API docs; preserve full wire bytes separately for calibration.
+* In `auto` mode, use `Unified` when both safe budgets and choice limits fit; total question content above 28K alone does not require splitting. Otherwise, when both logical tracks have inputs, execute Track A and Track B concurrently via `Promise.all` and merge their routing decisions.
+* Every actual outgoing track/batch must independently pass both budgets. Partition complete question/overview records without truncating candidates. Unsplittable state or a single oversized question fails open. Do not reduce either rule to one aggregate-token threshold.
 * **Explicit parallel visibility**: navigation cards, status output and reports must clearly identify `Unified` versus `Parallel`. Show per-track actual token usage, e.g. `Track A (Overview): 24K | Track B (Skills + Mem): 8K (Parallel)`.
 * Never display the two tracks' token sum as an unexplained single-request count. If a total is shown, label it as an aggregate across parallel requests. Keep estimated payload tokens distinct from actual API usage.
 * Fast routing is a product goal, not an unverified fixed ~450ms guarantee. Measure local collection plus API evaluation and injection when reporting end-to-end latency.

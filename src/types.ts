@@ -29,6 +29,8 @@ export type JevQuestion = JevChoiceQuestion | JevScoreQuestion | JevNoulQuestion
 export interface JevState {
   user_task: string;
   codebase_trie_map?: string;
+  /** Constant independent Skill applicability rubric, shared once per request. */
+  skill_policy?: string;
   skills_catalog?: string[];
   memory_guards?: string[];
   safety_rules?: string[];
@@ -102,6 +104,8 @@ export interface MemoryRetrievalStats {
   status: 'ready' | 'empty' | 'disabled' | 'unavailable' | 'unsupported' | 'cancelled';
   eligible: number; retrieved: number; candidates: number; selected: number;
   latencyMs: number; estimatedTokens: number; queries: number; budgetLimited: boolean;
+  /** Ordered manifest: q5_memory_<index> maps to this stable Hermes ID. */
+  candidateIds?: string[];
   keywordTerms?: string[];
   keywordLatencyMs?: number;
   keywordStatus?: 'ready' | 'bypassed' | 'timeout' | 'error';
@@ -131,6 +135,17 @@ export interface DispatchDecision {
     catalogRequests?: number;
     totalTokens?: number;
     totalRequests?: number;
+  };
+  /** Per-request calibration manifest; never includes credentials or candidate bodies. */
+  requestUsage?: Array<{
+    track: 'overview' | 'catalog' | 'unified'; model: string;
+    inputTokens: number; outputTokens: number; latencyMs: number;
+    totalTokens: number; windowTokens: number; stateTokens: number; longestQuestionTokens: number;
+    wireBytes: number; questionCount: number;
+  }>;
+  estimatedCapacity?: {
+    totalTokens: number; windowTokens: number; stateTokens: number; longestQuestionTokens: number;
+    wireBytes: number; questionCount: number;
   };
   estimatedPayloadTokens?: number;
   estimatedTrackTokens?: { unified?: number; overview?: number; catalog?: number };
