@@ -4,7 +4,7 @@ import type { JevNavigator } from './index.js';
 import type { DispatchDecision } from './types.js';
 import { TailInjector } from './injector/tail-injector.js';
 import { formatRoutingStats, formatMemoryRetrieval } from './jev/stats.js';
-import { NavigationTailLedger, navigationMessageKey } from './injector/tail-ledger.js';
+import { NavigationTailLedger, navigationMessageKey, type CurrentTail } from './injector/tail-ledger.js';
 import { SessionSkillPolicy } from './injector/skill-policy.js';
 
 /** Request-local transformations only; never rewrite provider payloads or persisted transcripts. */
@@ -38,6 +38,8 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
 
   type Run = { decision?: DispatchDecision; guidance?: string; userKey?: string; userEntryId?: string; userOccurrence?: number; guidanceDisplayed?: boolean; telemetry?: string };
   const runs = new Map<string, Run>();
+  type SteeringItem = { text: string; promise: Promise<Run | undefined> };
+  const steeringRuns = new Map<string, SteeringItem[]>();
   const ledger = new NavigationTailLedger(pi);
   const skillPolicy = new SessionSkillPolicy(pi);
   const keyFor = (ctx: ExtensionContext) => JSON.stringify([
@@ -46,6 +48,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
 
   pi.on('session_start', async (_event, ctx) => {
     runs.delete(keyFor(ctx));
+    steeringRuns.delete(keyFor(ctx));
     ledger.clearFallback(keyFor(ctx));
     try {
       const nav = getNavigator(ctx.cwd);
@@ -60,6 +63,41 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     } catch {
       // Missing/unreadable local state must not prevent the main agent from starting.
     }
+  });
+
+  pi.on('input', async (event, ctx) => {
+    // Intercept prompts submitted while the model/tools are running (steering or follow-up).
+    // Idle prompts proceed through before_agent_start.
+    if (!event.streamingBehavior) return;
+    if (!event.text || event.text.startsWith('/') || isJevDisabled(ctx)) return;
+    const key = keyFor(ctx);
+    const nav = getNavigator(ctx.cwd);
+    const config = nav.getConfig();
+    if (!nav.hasApiKey() || config.enableTailInjection === false || ctx.signal?.aborted) return;
+
+    const promise = (async (): Promise<Run | undefined> => {
+      try {
+        const decision = await nav.evaluatePrompt(event.text, [], {
+          sessionFile: ctx.sessionManager?.getSessionFile?.(),
+          sessionId: ctx.sessionManager?.getSessionId?.(),
+        }, { signal: ctx.signal });
+        if (!decision || decision.bypassed) return undefined;
+        const guidance = new TailInjector().formatTailGuidance(decision);
+        const stats = [formatRoutingStats(decision)];
+        if (decision.memoryRetrieval) stats.push(formatMemoryRetrieval(decision.memoryRetrieval));
+        const telemetry = `Jev Telemetry: ${stats.join('\n')}`;
+        return { decision, guidance, telemetry };
+      } catch {
+        return undefined;
+      }
+    })();
+
+    let queue = steeringRuns.get(key);
+    if (!queue) {
+      queue = [];
+      steeringRuns.set(key, queue);
+    }
+    queue.push({ text: event.text, promise });
   });
 
   pi.on('before_agent_start', async (event, ctx) => {
@@ -133,7 +171,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     for (let i = event.messages.length - 1; i >= 0; i--) {
       if (event.messages[i].role === 'user') { latestIndex = i; break; }
     }
-    let current: { index: number; guidance: string; userEntryId?: string; bind?: (id: string) => void } | undefined;
+    const currentTails: CurrentTail[] = [];
     if (run && latestIndex >= 0 && !ctx.signal?.aborted) {
       if (run.userKey === undefined) run.userKey = navigationMessageKey(event.messages[latestIndex]);
       // Bind the initial prompt even when steering arrives before the first request.
@@ -142,47 +180,85 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
         && navigationMessageKey(message) === run.userKey ? [index] : []);
       const index = run.userOccurrence === undefined
         ? matchingIndices.at(-1) : matchingIndices[run.userOccurrence];
-      if (index !== undefined) current = {
+      if (index !== undefined) currentTails.push({
         index, guidance: run.guidance ?? '', userEntryId: run.userEntryId,
         bind: id => { run.userEntryId = id; },
-      };
+      });
     }
-    const messages = ledger.replay(event.messages, ctx, key, current);
-    if (ctx.hasUI && current && run && !run.guidanceDisplayed) {
-      const original = event.messages[current.index];
-      const injected = messages[current.index];
+
+    const steeringList = steeringRuns.get(key);
+    const activeSteeringRuns: Array<{ run: Run; index: number }> = [];
+    if (steeringList && steeringList.length > 0 && !ctx.signal?.aborted) {
+      for (let i = 0; i < event.messages.length; i++) {
+        const msg = event.messages[i];
+        if (msg.role !== 'user') continue;
+        if (run && navigationMessageKey(msg) === run.userKey) continue;
+        const msgText = typeof msg.content === 'string' ? msg.content
+          : Array.isArray(msg.content)
+            ? msg.content.filter(p => p.type === 'text').map(p => (p as any).text).join('') : '';
+        const matchIdx = steeringList.findIndex(s => s.text === msgText || (msgText && msgText.startsWith(s.text)));
+        if (matchIdx >= 0) {
+          const item = steeringList.splice(matchIdx, 1)[0];
+          const evaluated = await item.promise;
+          if (evaluated?.guidance) {
+            const steeringRun: Run = { ...evaluated, userKey: navigationMessageKey(msg) };
+            currentTails.push({
+              index: i, guidance: evaluated.guidance,
+              bind: id => { steeringRun.userEntryId = id; },
+            });
+            activeSteeringRuns.push({ run: steeringRun, index: i });
+          }
+        }
+      }
+    }
+
+    const messages = ledger.replay(event.messages, ctx, key, currentTails);
+    const displayTail = (targetRun: Run, targetIndex: number) => {
+      if (!ctx.hasUI || targetRun.guidanceDisplayed) return;
+      const original = event.messages[targetIndex];
+      const injected = messages[targetIndex];
       let tail = '';
-      if (original.role === 'user' && injected.role === 'user') {
+      if (original?.role === 'user' && injected?.role === 'user') {
         if (typeof original.content === 'string' && typeof injected.content === 'string'
           && injected.content.startsWith(original.content)) {
           tail = injected.content.slice(original.content.length);
         } else if (Array.isArray(original.content) && Array.isArray(injected.content)) {
           tail = injected.content.slice(original.content.length)
-            .filter(part => part.type === 'text').map(part => part.text).join('');
+            .filter(part => part.type === 'text').map(part => (part as any).text).join('');
         }
       }
       if (tail) {
-        // Display exactly the bytes sent to the model, including full SOP paths and
-        // memory constraints. Never add a second model message or rewrite old tails.
-        run.guidanceDisplayed = true;
-        // Pi coalesces consecutive info notifications. Send one display with two
-        // distinct blocks so neither the navigation body nor telemetry is overwritten.
-        try { ctx.ui.notify(`${tail}\n\n${run.telemetry ?? ''}`, 'info'); }
+        targetRun.guidanceDisplayed = true;
+        try { ctx.ui.notify(`${tail}\n\n${targetRun.telemetry ?? ''}`, 'info'); }
         catch { /* UI failure must not affect wire history. */ }
       }
+    };
+
+    if (run && currentTails.length > 0 && currentTails[0].index !== undefined) {
+      displayTail(run, currentTails[0].index);
     }
-    if (messages !== event.messages || run?.guidance) return { messages };
+    for (const item of activeSteeringRuns) {
+      displayTail(item.run, item.index);
+    }
+
+    const hasAnyGuidance = run?.guidance || activeSteeringRuns.some(s => s.run.guidance);
+    if (messages !== event.messages || hasAnyGuidance) return { messages };
   });
 
   // turn_end fires after every tool batch; agent_end can precede recovery/continuations.
   // Keep guidance for the whole run, including retries, until Pi's final settle boundary.
-  pi.on('agent_settled', async (_event, ctx) => { runs.delete(keyFor(ctx)); });
+  pi.on('agent_settled', async (_event, ctx) => {
+    runs.delete(keyFor(ctx));
+    steeringRuns.delete(keyFor(ctx));
+  });
   pi.on('session_tree', async (_event, ctx) => {
     runs.delete(keyFor(ctx));
+    steeringRuns.delete(keyFor(ctx));
     ledger.clearFallback(keyFor(ctx));
   });
   pi.on('session_shutdown', async (_event, ctx) => {
     runs.delete(keyFor(ctx));
+    steeringRuns.delete(keyFor(ctx));
     ledger.clearFallback(keyFor(ctx));
     skillPolicy.clear(keyFor(ctx));
   });

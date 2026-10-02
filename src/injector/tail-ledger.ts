@@ -9,7 +9,7 @@ export const MAX_NAVIGATION_TAIL_CHARS = 256 * 1024;
 // Never publish a tail that a later replay would reject. Preserve whole guidance
 // or freeze absence; clipping could remove essential constraints or SOP paths.
 const boundedGuidance = (guidance: string) => guidance.length <= MAX_NAVIGATION_TAIL_CHARS ? guidance : '';
-interface CurrentTail {
+export interface CurrentTail {
   index: number; guidance: string; userEntryId?: string; bind?: (id: string) => void;
 }
 interface FrozenTail {
@@ -68,7 +68,7 @@ export class NavigationTailLedger {
   }
 
   public replay(messages: Messages, ctx: ExtensionContext, sessionKey: string,
-    current?: CurrentTail): Messages {
+    current?: CurrentTail | CurrentTail[]): Messages {
     const manager = ctx.sessionManager;
     if (typeof manager.getBranch !== 'function') return this.replayFallback(messages, sessionKey, current);
     const branch = manager.getBranch();
@@ -112,16 +112,17 @@ export class NavigationTailLedger {
       const matches = users.filter(entry => sameUser(message, entry.message, records.get(entry.id)));
       if (matches.length === 1) bindings.set(index, matches[0].id); // refuse ambiguous timestamps/content
     }
-    if (current) {
-      const id = bindings.get(current.index);
+    const currentList = Array.isArray(current) ? current : current ? [current] : [];
+    for (const cur of currentList) {
+      const id = bindings.get(cur.index);
       const user = id ? usersById.get(id) : undefined;
-      if (id && user && (!current.userEntryId || current.userEntryId === id)) {
-        current.bind?.(id);
+      if (id && user && (!cur.userEntryId || cur.userEntryId === id)) {
+        cur.bind?.(id);
       }
-      if (id && user && (!current.userEntryId || current.userEntryId === id) && !records.has(id)) {
+      if (id && user && (!cur.userEntryId || cur.userEntryId === id) && !records.has(id)) {
         const record: FrozenTail = {
           version: 1, userEntryId: id, userTimestamp: user.message.timestamp,
-          userContentHash: fingerprint(user.message), guidance: boundedGuidance(current.guidance),
+          userContentHash: fingerprint(user.message), guidance: boundedGuidance(cur.guidance),
         };
         // Persist BEFORE publishing a new tail. On failure do not create another ephemeral
         // prefix that cannot survive reload. Existing historical tails remain replayable.
@@ -158,15 +159,17 @@ export class NavigationTailLedger {
     return result;
   }
 
-  private replayFallback(messages: Messages, key: string, current?: CurrentTail): Messages {
+  private replayFallback(messages: Messages, key: string, current?: CurrentTail | CurrentTail[]): Messages {
     let records = this.fallback.get(key);
     if (!records) { records = new Map(); this.fallback.set(key, records); }
-    if (current) {
-      const message = messages[current.index];
+    const currentList = Array.isArray(current) ? current : current ? [current] : [];
+    for (const cur of currentList) {
+      const message = messages[cur.index];
+      if (!message) continue;
       const id = navigationMessageKey(message);
       if (!records.has(id)) records.set(id, {
         version: 1, userEntryId: id, userTimestamp: message.timestamp,
-        userContentHash: fingerprint(message), guidance: boundedGuidance(current.guidance),
+        userContentHash: fingerprint(message), guidance: boundedGuidance(cur.guidance),
       });
     }
     let result = messages;

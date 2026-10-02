@@ -491,6 +491,100 @@ describe('Tail Replay & Prompt Cache Invariance (jev-navigation-tail-v1)', () =>
     expect(steeringContext.messages[4].content).not.toContain('System One Navigation Context');
   });
 
+  it('routes mid-run steering prompt via input hook, appends distinct tail to steering user, and freezes both in ledger', async () => {
+    const sm = new FakeSessionManager('session-tool-steering-evaluated');
+    const h = createTailReplayHarness({
+      sessionManager: sm,
+      evaluate: async (prompt: string) => {
+        if (prompt.includes('abort and check git logs')) {
+          return {
+            targetSubsystems: ['git-ops'],
+            activatedSkill: 'sop-git-logs',
+            activatedSkillPath: '/skills/sop-git-logs/SKILL.md',
+            latencyMs: 8,
+          };
+        }
+        return {
+          targetSubsystems: ['tooling'],
+          activatedSkill: 'sop-tool-executor',
+          activatedSkillPath: '/skills/sop-tool-executor/SKILL.md',
+          latencyMs: 7,
+        };
+      },
+    });
+    const ctx = h.getContext();
+
+    const sysMsg: FakeSessionMessage = { role: 'system', content: 'System prompt', timestamp: 100 };
+    sm.appendMessage(sysMsg);
+    const user1RawMsg: FakeSessionMessage = { role: 'user', content: 'Run command task', timestamp: 1000 };
+    sm.appendMessage(user1RawMsg);
+
+    // Initial prompt in run 1
+    await h.emit('before_agent_start', { prompt: user1RawMsg.content }, ctx);
+    const firstContext = await h.emit('context_with_system', { messages: [sysMsg, structuredClone(user1RawMsg)] }, ctx);
+    const user1Transformed = firstContext.messages[1].content as string;
+    expect(user1Transformed).toContain('sop-tool-executor');
+
+    // 1. Tool Turn: assistant emits toolCall, toolResult is returned
+    const toolCallMsg: FakeSessionMessage = {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'git status' } }],
+      timestamp: 1200,
+    };
+    const toolResultMsg: FakeSessionMessage = {
+      role: 'toolResult',
+      toolCallId: 'call_1',
+      content: [{ type: 'text', text: 'On branch main' }],
+      timestamp: 1300,
+    };
+    sm.appendMessage(toolCallMsg);
+    sm.appendMessage(toolResultMsg);
+
+    await h.emit('turn_end', {}, ctx);
+
+    // 2. User types steering prompt while tool was running -> Pi emits input event
+    const steeringText = 'Steering instruction: abort and check git logs instead';
+    await h.emit('input', { text: steeringText, source: 'interactive', streamingBehavior: 'steer' }, ctx);
+
+    // 3. Agent delivers the steering message to conversation
+    const steeringMsg: FakeSessionMessage = {
+      role: 'user',
+      content: steeringText,
+      timestamp: 1400,
+    };
+    sm.appendMessage(steeringMsg);
+
+    // 4. context_with_system called for next model request
+    const steeringContext = await h.emit('context_with_system', {
+      messages: [sysMsg, structuredClone(user1RawMsg), toolCallMsg, toolResultMsg, structuredClone(steeringMsg)],
+    }, ctx);
+
+    // Assert: old user1 tail stays intact
+    expect(steeringContext).toBeDefined();
+    expect(steeringContext.messages[1].content).toBe(user1Transformed);
+    expect(steeringContext.messages[1].content).toContain('sop-tool-executor');
+
+    // Assert: system message is 100% untouched
+    expect(steeringContext.messages[0].content).toBe('System prompt');
+
+    // Assert: steering user message receives its OWN evaluated decision, NOT the old one!
+    const steeringTransformed = steeringContext.messages[4].content as string;
+    expect(steeringTransformed).toContain('sop-git-logs');
+    expect(steeringTransformed).not.toContain('sop-tool-executor');
+    expect(steeringTransformed).toContain('System One Navigation Context');
+
+    // Assert: both tails were recorded in the session custom entries
+    const customEntries = sm.getEntries().filter((e) => e.type === 'custom' && (e as any).customType === 'jev-navigation-tail-v1');
+    expect(customEntries.length).toBe(2);
+
+    // Assert: subsequent context_with_system replays both tails bit-for-bit
+    const repeatContext = await h.emit('context_with_system', {
+      messages: [sysMsg, structuredClone(user1RawMsg), toolCallMsg, toolResultMsg, structuredClone(steeringMsg)],
+    }, ctx);
+    expect(repeatContext.messages[1].content).toBe(user1Transformed);
+    expect(repeatContext.messages[4].content).toBe(steeringTransformed);
+  });
+
   it('restores historical tails from persisted custom entries on clean extension reload or session resume', async () => {
     const sm = new FakeSessionManager('session-reload');
     const sysMsg: FakeSessionMessage = { role: 'system', content: 'System root', timestamp: 100 };
