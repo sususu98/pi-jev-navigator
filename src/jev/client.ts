@@ -108,7 +108,7 @@ export class JevClient {
   ): Promise<{ response: JevSystemOneResponse; latencyMs: number }> {
     if (!this.apiKey) throw new Error('TypeSafe Jev API Key not configured');
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Invalid Jev timeout');
-    timeoutMs = Math.min(timeoutMs, 1500);
+    timeoutMs = Math.min(timeoutMs, 3000);
     assertRequestCapacity(request, this.model);
 
     const fullPayload: JevSystemOneRequest = { model: this.model, ...request };

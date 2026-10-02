@@ -60,7 +60,7 @@ export class JevDualPipeline {
     const t0 = Date.now();
     const controller = new AbortController();
     const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    const budget = Math.min(config.timeoutMs ?? 1500, 1500);
+    const budget = Math.min(config.timeoutMs ?? 1500, 3000);
     const deadline = t0 + budget;
     const timer = setTimeout(() => controller.abort(new Error('Jev routing deadline exceeded')), budget);
     // Shared across both tracks and all capacity batches, not four workers per track.
