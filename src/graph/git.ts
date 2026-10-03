@@ -34,8 +34,9 @@ export function resolveGitContext(targetPath: string = process.cwd()): GitContex
       : path.resolve(targetPath, gitCommonDirRaw);
     const gitCommonDir = fs.realpathSync(gitCommonDirPath);
 
-    // main repo root is parent of .git common directory
-    const mainRepoRoot = path.dirname(gitCommonDir);
+    // Only the standard .git layout identifies a main working root. A separate
+    // metadata directory is not another project to scan or load skills from.
+    const mainRepoRoot = path.basename(gitCommonDir) === '.git' ? path.dirname(gitCommonDir) : worktreeRoot;
     const projectName = path.basename(mainRepoRoot);
     const isWorktree = path.resolve(worktreeRoot) !== path.resolve(mainRepoRoot);
 

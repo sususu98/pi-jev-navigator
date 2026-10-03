@@ -32,6 +32,7 @@ export function buildMemoryQuestions(memories: MemoryGuard[]): Record<string, Je
       instructions: {
         question: MEMORY_GUARD_INSTRUCTIONS,
         candidate: { id: memory.id, category: memory.category, scope: memory.project ?? 'global',
+          ...(memory.sourceTarget ? { target: memory.sourceTarget } : {}),
           // Titles are often the whole first line of a long rule. Do not duplicate
           // text already present verbatim; all original guidance remains available.
           ...(guidance.includes(memory.title) ? {} : { title: memory.title }), guidance },

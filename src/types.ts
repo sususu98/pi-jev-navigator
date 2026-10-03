@@ -95,6 +95,7 @@ export interface MemoryGuard {
   summary: string;
   rule: string;
   project?: string;
+  sourceTarget?: 'memory' | 'user' | 'failure' | 'project';
 }
 
 export type ExecutionMode = 'auto' | 'parallel' | 'unified';
@@ -107,6 +108,11 @@ export interface MemoryRetrievalStats {
   /** Ordered manifest: q5_memory_<index> maps to this stable Hermes ID. */
   candidateIds?: string[];
   keywordTerms?: string[];
+  keywordQueryGroups?: string[][];
+  /** Hermes-eligible scope versus the optional target-filtered search pool. */
+  project?: string | null;
+  targets?: Array<'memory' | 'user' | 'failure' | 'project'>;
+  searchable?: number;
   keywordLatencyMs?: number;
   keywordStatus?: 'ready' | 'bypassed' | 'timeout' | 'error';
 }

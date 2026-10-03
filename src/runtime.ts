@@ -6,6 +6,7 @@ import { TailInjector } from './injector/tail-injector.js';
 import { formatRoutingStats, formatMemoryRetrieval } from './jev/stats.js';
 import { NavigationTailLedger, navigationMessageKey, type CurrentTail } from './injector/tail-ledger.js';
 import { SessionSkillPolicy } from './injector/skill-policy.js';
+import { collectTaskContext } from './memory/task-context.js';
 
 /** Request-local transformations only; never rewrite provider payloads or persisted transcripts. */
 export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: string) => JevNavigator): void {
@@ -80,7 +81,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
         const decision = await nav.evaluatePrompt(event.text, [], {
           sessionFile: ctx.sessionManager?.getSessionFile?.(),
           sessionId: ctx.sessionManager?.getSessionId?.(),
-        }, { signal: ctx.signal });
+        }, { signal: ctx.signal, recentContext: collectTaskContext(ctx.sessionManager?.getBranch?.() ?? []) });
         if (!decision || decision.bypassed) return undefined;
         const guidance = new TailInjector().formatTailGuidance(decision);
         const stats = [formatRoutingStats(decision)];
@@ -127,7 +128,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
       const decision = await nav.evaluatePrompt(event.prompt, [], {
         sessionFile: ctx.sessionManager?.getSessionFile?.(),
         sessionId: ctx.sessionManager?.getSessionId?.(),
-      }, { skills, signal: ctx.signal });
+      }, { skills, signal: ctx.signal, recentContext: collectTaskContext(ctx.sessionManager?.getBranch?.() ?? []) });
       if (runs.get(key) !== run || ctx.signal?.aborted || !decision || decision.bypassed) return;
       run.decision = decision;
       run.guidance = new TailInjector().formatTailGuidance(decision);

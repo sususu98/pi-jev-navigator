@@ -5,7 +5,9 @@ export function formatTokens(tokens: number): string {
 }
 
 export function formatMemoryRetrieval(stats: MemoryRetrievalStats): string {
-  return `Memory: ${stats.eligible.toLocaleString()} eligible → ${stats.candidates} candidates → ${stats.selected} selected | Retrieval: ${stats.latencyMs.toFixed(1)}ms (${stats.status}${stats.budgetLimited ? ', budget-limited' : ''}) | ${formatTokens(stats.estimatedTokens)} estimated`;
+  const scope = stats.project === undefined ? '' : ` | Scope: global${stats.project ? ` + ${stats.project}` : ''}`;
+  const targets = stats.targets ? ` | Targets: ${stats.targets.join(', ') || 'none'} (${stats.searchable ?? 0} searchable)` : '';
+  return `Memory: ${stats.eligible.toLocaleString()} eligible → ${stats.candidates} candidates → ${stats.selected} selected | Retrieval: ${stats.latencyMs.toFixed(1)}ms (${stats.status}${stats.budgetLimited ? ', budget-limited' : ''}) | ${formatTokens(stats.estimatedTokens)} estimated${scope}${targets}`;
 }
 
 /** Actual API usage only. Estimates are separate fields, never mixed into these labels. */

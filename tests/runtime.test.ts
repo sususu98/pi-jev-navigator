@@ -167,6 +167,24 @@ describe('Pi lifecycle integration', () => {
     expect(steered.messages[4]).toEqual(updated[4]);
   });
 
+  it('passes active branch context independently to normal and steering routing', async () => {
+    const h = harness();
+    const ctx = context();
+    (ctx.sessionManager as any).getBranch = () => [
+      { type: 'message', message: { role: 'user', content: 'Implement Orchid capsule' } },
+      { type: 'message', message: { role: 'toolResult', content: 'PRIVATE_TOOL_BODY' } },
+    ];
+    await h.emit('before_agent_start', { prompt: 'continue' }, ctx);
+    await h.emit('input', { text: 'fix the tenant boundary', streamingBehavior: 'steer' }, ctx);
+    (ctx.sessionManager as any).getBranch = () => [{ type: 'message', message: { role: 'user', content: 'OTHER_BRANCH_TOPIC' } }];
+    for (const call of h.nav.evaluatePrompt.mock.calls) {
+      expect(call[3].recentContext).toEqual([{ role: 'user', text: 'Implement Orchid capsule' }]);
+      expect(JSON.stringify(call[3])).not.toContain('PRIVATE_TOOL_BODY');
+    }
+    expect(h.nav.evaluatePrompt.mock.calls[0][0]).toBe('continue');
+    expect(h.nav.evaluatePrompt.mock.calls[1][0]).toBe('fix the tenant boundary');
+  });
+
   it('shows actual per-track usage in runtime notifications and explicit evaluation', async () => {
     const h = harness({ evaluate: async () => ({
       ...decision(), pipelineMode: 'parallel', inputTokens: 300,

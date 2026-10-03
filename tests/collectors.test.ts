@@ -56,6 +56,17 @@ describe('skill catalog discovery', () => {
 });
 
 describe('memory candidate identity', () => {
+  it('decodes full Base64URL Unicode projects without accepting a truncated project or corrupt marker', () => {
+    const current = path.join(temporary, 'rep'); fs.mkdirSync(current);
+    const unicode = 'repo😀';
+    put(path.join(home, '.pi/agent/pi-hermes-memory/failures.md'), [
+      `[correction] FOREIGN_UNICODE\nSecret rule\n<!-- project64=${Buffer.from(unicode).toString('base64url')} last=2026-10-03 -->`,
+      '[correction] CORRUPT_SCOPE\nSecret corrupt rule\n<!-- project64=a!broken last=2026-10-03 -->',
+    ].join('\n§\n'));
+    expect(new MemoryCollector(home).collectMemories(current)).toEqual([]);
+    const matched = path.join(temporary, unicode); fs.mkdirSync(matched);
+    expect(new MemoryCollector(home).collectMemories(matched).map(memory => memory.title)).toEqual(['FOREIGN_UNICODE']);
+  });
   it('never merges distinct titles or bodies sharing short prefixes', () => {
     const prefix = 'a'.repeat(80);
     const records = [

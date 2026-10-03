@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { createHash } from 'crypto';
-import { resolveGitContext } from '../graph/git.js';
+import { resolveHermesScope } from './hermes-scope.js';
 
 export interface MemoryGuard {
   id: string;
@@ -76,13 +76,18 @@ export class MemoryCollector {
 
     if (metaMatch) {
       const metaStr = metaMatch[1];
-      const projMatch = metaStr.match(/project64=([a-zA-Z0-9+=]+)/);
+      const projMatch = metaStr.match(/project64=([^\s,>]+)/);
+      if (metaStr.includes('project64=') && !projMatch) return null;
       if (projMatch) {
         try {
-          project = Buffer.from(projMatch[1], 'base64').toString('utf-8');
-        } catch {
-          project = 'global';
-        }
+          const encoded = projMatch[1];
+          if (!/^[a-zA-Z0-9_+\/=-]+$/.test(encoded)) return null;
+          const bytes = Buffer.from(encoded, 'base64url');
+          const canonical = encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+          if (bytes.toString('base64url') !== canonical) return null;
+          project = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim();
+          if (!project) return null;
+        } catch { return null; }
       }
       const lastMatch = metaStr.match(/last=([0-9-]+)/);
       if (lastMatch) {
@@ -142,19 +147,20 @@ export class MemoryCollector {
    * Pure metadata-driven ranking (Recency + Category Hierarchy + Project Scope) with ZERO client-side keyword heuristics.
    */
   public collectMemories(projectRoot: string = process.cwd(), maxTotal: number = Infinity): MemoryGuard[] {
-    const gitCtx = resolveGitContext(projectRoot);
-    const targetProject = gitCtx.projectName || 'default';
+    const hermes = resolveHermesScope(projectRoot, this.homeDir);
+    const targetProject = hermes.project;
+    const cacheProject = JSON.stringify([targetProject, hermes.memoryDir, hermes.projectsRoot]);
 
     const memoryFiles = [
-      { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'failures.md'), defaultCategory: 'correction' as const },
-      { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'USER.md'), defaultCategory: 'preference' as const },
-      { path: path.join(this.homeDir, '.pi', 'agent', 'projects-memory', targetProject, 'MEMORY.md'), defaultCategory: 'convention' as const },
-      { path: path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'MEMORY.md'), defaultCategory: 'convention' as const },
+      { path: path.join(hermes.memoryDir, 'failures.md'), defaultCategory: 'correction' as const },
+      { path: path.join(hermes.memoryDir, 'USER.md'), defaultCategory: 'preference' as const },
+      ...(targetProject ? [{ path: path.join(hermes.projectsRoot, targetProject, 'MEMORY.md'), defaultCategory: 'convention' as const }] : []),
+      { path: path.join(hermes.memoryDir, 'MEMORY.md'), defaultCategory: 'convention' as const },
     ];
 
     const signatures = memoryFiles.map((item) => this.fileSignature(item.path));
     const signature = JSON.stringify(signatures);
-    if (this.memoryCache?.project === targetProject && this.memoryCache.signature === signature &&
+    if (this.memoryCache?.project === cacheProject && this.memoryCache.signature === signature &&
       Date.now() - this.memoryCache.timestamp < this.CACHE_TTL_MS) {
       return this.memoryCache.guards.slice(0, maxTotal);
     }
@@ -256,7 +262,7 @@ export class MemoryCollector {
       }));
 
     this.memoryCache = {
-      project: targetProject,
+      project: cacheProject,
       signature,
       timestamp: Date.now(),
       guards: sortedGuards,

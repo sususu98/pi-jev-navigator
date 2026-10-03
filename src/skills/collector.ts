@@ -5,6 +5,7 @@ import { parse as parseYaml } from 'yaml';
 import { SkillSummary } from '../types.js';
 import { resolveGitContext } from '../graph/git.js';
 import { parseJsonc } from '../config/config-store.js';
+import { resolveHermesScope } from '../memory/hermes-scope.js';
 
 export class SkillCollector {
   private readonly homeDir: string;
@@ -38,9 +39,9 @@ export class SkillCollector {
     }
   }
 
-  private readSettingsPaths(projectRoot: string): string[] {
+  private readSettingsPaths(projectRoot: string, agentRoot: string): string[] {
     const result: string[] = [];
-    for (const directory of [path.join(this.homeDir, '.pi', 'agent'), path.join(projectRoot, '.pi')]) {
+    for (const directory of [agentRoot, path.join(projectRoot, '.pi')]) {
       try {
         const settings = parseJsonc<{ skills?: unknown }>(fs.readFileSync(path.join(directory, 'settings.json'), 'utf8'));
         if (!Array.isArray(settings.skills)) continue;
@@ -94,16 +95,16 @@ export class SkillCollector {
 
   public collectSkills(projectRoot: string, additionalPaths: string[] = []): SkillSummary[] {
     const gitCtx = resolveGitContext(projectRoot);
+    const hermes = resolveHermesScope(projectRoot, this.homeDir);
     const searchDirs = [
       path.join(gitCtx.worktreeRoot, '.agents', 'skills'),
       path.join(gitCtx.worktreeRoot, '.pi', 'skills'),
       ...(gitCtx.isWorktree ? [path.join(gitCtx.mainRepoRoot, '.agents', 'skills'), path.join(gitCtx.mainRepoRoot, '.pi', 'skills')] : []),
       path.join(this.homeDir, '.agents', 'skills'),
-      path.join(this.homeDir, '.pi', 'agent', 'skills'),
-      path.join(this.homeDir, '.pi', 'agent', 'projects-memory', gitCtx.projectName, 'skills'),
-      path.join(this.homeDir, '.pi', 'agent', 'projects-memory', path.basename(projectRoot), 'skills'),
-      path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'skills'),
-      ...this.readSettingsPaths(projectRoot),
+      path.join(hermes.agentRoot, 'skills'),
+      ...(hermes.project ? [path.join(hermes.projectsRoot, hermes.project, 'skills')] : []),
+      path.join(hermes.memoryDir, 'skills'),
+      ...this.readSettingsPaths(projectRoot, hermes.agentRoot),
       ...additionalPaths.map((p) => p.startsWith('~/') ? path.join(this.homeDir, p.slice(2)) : path.resolve(projectRoot, p)),
     ];
     return this.collectPaths(searchDirs);
@@ -111,10 +112,10 @@ export class SkillCollector {
 
   /** Learned Hermes SOPs supplement, but never override, Pi's canonical catalog. */
   public collectLearnedSkills(projectRoot: string): SkillSummary[] {
-    const git = resolveGitContext(projectRoot);
+    const hermes = resolveHermesScope(projectRoot, this.homeDir);
     return this.collectPaths([
-      path.join(this.homeDir, '.pi', 'agent', 'pi-hermes-memory', 'skills'),
-      path.join(this.homeDir, '.pi', 'agent', 'projects-memory', git.projectName, 'skills'),
+      path.join(hermes.memoryDir, 'skills'),
+      ...(hermes.project ? [path.join(hermes.projectsRoot, hermes.project, 'skills')] : []),
     ]);
   }
 

@@ -51,6 +51,79 @@ describe('GeminiKeywordExtractor', () => {
     expect(capturedBody.generationConfig?.responseMimeType).toBe('application/json');
   });
 
+  it('sends bounded recent context as data with a constant system prompt and parses precise groups', async () => {
+    const requests: any[] = [];
+    const extractor = new GeminiKeywordExtractor('/tmp', (async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+        terms: ['Orchid capsule', '租户隔离'], queryGroups: [['Orchid', 'capsule'], ['租户隔离']],
+      }) }] } }] });
+    }) as typeof fetch, dummyConfig);
+    const recentContext = [{ role: 'user' as const, text: 'Implement Orchid capsule with tenant isolation' }];
+    const result = await extractor.extract('continue', { recentContext });
+    expect(result.queryGroups).toEqual([['Orchid', 'capsule'], ['租户隔离']]);
+    expect(JSON.parse(requests[0].contents[0].parts[0].text)).toEqual({ current_request: 'continue', recent_context: recentContext });
+    await extractor.extract('switch topic', { recentContext: [{ role: 'assistant', text: 'x'.repeat(10000) }] });
+    expect(requests[0].systemInstruction).toEqual(requests[1].systemInstruction);
+    expect(requests[1].generationConfig.responseSchema.required).toEqual(['needsMemory', 'subject', 'terms', 'queryGroups', 'memoryTargets']);
+    expect(requests[1].contents[0].parts[0].text.length).toBeLessThan(1500);
+  });
+
+  it('accepts intentional empty groups without inventing terms', async () => {
+    const extractor = new GeminiKeywordExtractor('/tmp', (async () => Response.json({
+      candidates: [{ content: { parts: [{ text: '{"needsMemory":false,"terms":["stale subject"],"queryGroups":[["stale subject"]]}' }] } }],
+    })) as typeof fetch, dummyConfig);
+    const result = await extractor.extract('thanks');
+    expect(result.status).toBe('ready');
+    expect(result.terms).toEqual([]);
+    expect(result.queryGroups).toEqual([]);
+  });
+
+  it('fails open on invalid query groups instead of converting them to an intentional empty result', async () => {
+    for (const queryGroups of [[['ab']], [[]], [['㍿'.repeat(9)]], [[12]], 'invalid']) {
+      const extractor = new GeminiKeywordExtractor('/tmp', (async () => Response.json({
+        candidates: [{ content: { parts: [{ text: JSON.stringify({ terms: ['Orchid'], queryGroups }) }] } }],
+      })) as typeof fetch, dummyConfig);
+      const result = await extractor.extract('Orchid');
+      expect(result.status).toBe('error');
+      expect(result.terms).toEqual([]);
+      expect(result.queryGroups).toBeUndefined();
+    }
+  });
+
+  it('keeps a dedicated subject-only anchor apart from workflow refinements', async () => {
+    const extractor = new GeminiKeywordExtractor('/tmp', (async () => Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({ needsMemory: true, subject: 'Orchid capsule',
+        terms: ['Orchid capsule', 'regression tests'], queryGroups: [['Orchid capsule', 'regression tests']] }) }] } }],
+    })) as typeof fetch, dummyConfig);
+    expect((await extractor.extract('continue testing')).queryGroups).toEqual([['Orchid capsule'], ['Orchid capsule', 'regression tests']]);
+  });
+
+  it('rejects unknown needsMemory types and deduplicates subject before the four-group cap', async () => {
+    const response = (value: unknown) => Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(value) }] } }] });
+    for (const needsMemory of ['false', null, 0]) {
+      const extractor = new GeminiKeywordExtractor('/tmp', (async () => response({ needsMemory, terms: [], queryGroups: [] })) as typeof fetch, dummyConfig);
+      expect((await extractor.extract('Orchid capsule')).status).toBe('error');
+    }
+    const groups = [['Orchid capsule'], ['tenant isolation'], ['queue refresh'], ['capsule lineage']];
+    const extractor = new GeminiKeywordExtractor('/tmp', (async () => response({ needsMemory: true, subject: 'Orchid capsule',
+      terms: ['Orchid capsule'], queryGroups: groups })) as typeof fetch, dummyConfig);
+    expect((await extractor.extract('continue')).queryGroups).toEqual(groups);
+  });
+
+  it('validates model-selected Hermes targets without allowing arbitrary project names', async () => {
+    for (const memoryTargets of [['foreign-project'], ['session'], ['failure', 12], []]) {
+      const extractor = new GeminiKeywordExtractor('/tmp', (async () => Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+        needsMemory: true, subject: 'Orchid capsule', terms: ['Orchid capsule'], queryGroups: [['Orchid capsule']], memoryTargets,
+      }) }] } }] })) as typeof fetch, dummyConfig);
+      expect((await extractor.extract('continue')).status).toBe('error');
+    }
+    const extractor = new GeminiKeywordExtractor('/tmp', (async () => Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+      needsMemory: true, subject: 'Orchid capsule', terms: ['Orchid capsule'], queryGroups: [['Orchid capsule']], memoryTargets: ['project', 'failure'],
+    }) }] } }] })) as typeof fetch, dummyConfig);
+    expect((await extractor.extract('continue')).memoryTargets).toEqual(['project', 'failure']);
+  });
+
   it('fails open immediately on timeout without throwing', async () => {
     const fakeTransport = (async (_url: string, init?: RequestInit) => {
       await new Promise((resolve) => setTimeout(resolve, 200));

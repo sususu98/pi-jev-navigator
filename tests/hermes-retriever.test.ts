@@ -228,6 +228,24 @@ describe('read-only Hermes retrieval', () => {
     expect(result.stats.estimatedTokens).toBeLessThanOrEqual(8000);
   });
 
+  it('uses model-derived conjunctions without broadening misses or explicit empty groups', () => {
+    makeHermesDatabase(home, [
+      { content: 'Orchid capsule tenant isolation', project: 'CPA' },
+      { content: 'Orchid unrelated authentication', project: 'CPA' },
+      { content: 'capsule deployment on unrelated project', project: 'other' },
+      { content: 'capsule unrelated deploy', project: 'CPA' },
+    ]);
+    const retriever = new HermesMemoryRetriever(home);
+    const result = retriever.retrieve('continue', root, { extraTerms: ['Orchid', 'capsule'], queryGroups: [['Orchid', 'capsule']] });
+    expect(result.memories.map(memory => memory.rule)).toEqual(['Orchid capsule tenant isolation']);
+    expect(retriever.retrieve('Orchid', root, { queryGroups: [['Orchid', 'absent']] }).memories).toEqual([]);
+    expect(retriever.retrieve('Orchid', root, { extraTerms: ['Orchid'], queryGroups: [] }).memories).toEqual([]);
+    expect(retriever.retrieve('Orchid', root).memories.length).toBeGreaterThan(0);
+    const compound = retriever.retrieve('continue', root, { queryGroups: [['cross-protocol-Orchid_capsule']] });
+    expect(compound.memories.some(memory => memory.rule.includes('tenant isolation'))).toBe(true);
+    expect(compound.memories.some(memory => memory.rule.includes('unrelated'))).toBe(false);
+  });
+
   it('quotes lexical queries, bounds input and honors cancellation/zero budgets', () => {
     expect(buildMemoryQueries('CPA " OR NOT ; DROP TABLE memories --')).not.toEqual([]);
     expect(buildMemoryQueries('汉字')).toEqual([]); // trigram cannot index two-character terms

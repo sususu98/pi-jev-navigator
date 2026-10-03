@@ -7,6 +7,8 @@ import { GitNexusAdapter } from './graph/gitnexus-adapter.js';
 import { SkillCollector } from './skills/collector.js';
 import { HermesMemoryRetriever } from './memory/hermes-retriever.js';
 import { GeminiKeywordExtractor } from './memory/gemini-keyword-extractor.js';
+import { boundTaskContext, collectTaskContext, contextualRoutingTask, type TaskContextMessage } from './memory/task-context.js';
+import { resolveHermesScope, hermesRecallRange } from './memory/hermes-scope.js';
 import { TTLStore } from './cache/ttl-store.js';
 import { JevClient } from './jev/client.js';
 import { JevPrompter } from './jev/prompter.js';
@@ -20,7 +22,7 @@ import { registerRuntimeHooks } from './runtime.js';
 import type { JevNavigatorConfig, DispatchDecision, SkillSummary, MemoryRetrievalStats } from './types.js';
 
 interface SessionMeta { sessionFile?: string; sessionId?: string }
-interface EvaluationOptions { skills?: SkillSummary[]; signal?: AbortSignal }
+interface EvaluationOptions { skills?: SkillSummary[]; signal?: AbortSignal; recentContext?: TaskContextMessage[] }
 
 export class JevNavigator {
   private configStore: JevConfigStore;
@@ -103,11 +105,18 @@ export class JevNavigator {
     this.lastMemoryRetrieval = undefined;
     try {
       if (!this.hasApiKey() || options.signal?.aborted) return null;
-      let keywordPromise: Promise<{ terms: string[]; latencyMs: number; status: any }> | undefined;
+      const secrets = [...sensitiveValues(config), this.client.getApiKey() ?? '',
+        ...sensitiveValues(this.keywordExtractor.resolveCPAConfig())];
+      const recentContext = redactSensitive(boundTaskContext(options.recentContext), secrets) as TaskContextMessage[];
+      const safePrompt = redactSensitive(userPrompt, secrets) as string;
+      const routingTask = contextualRoutingTask(safePrompt, recentContext);
+      let keywordPromise: ReturnType<GeminiKeywordExtractor['extract']> | undefined;
       if (config.enableMemories !== false && config.enableKeywordExpansion !== false) {
-        keywordPromise = this.keywordExtractor.extract(userPrompt, {
+        keywordPromise = this.keywordExtractor.extract(safePrompt, {
           model: config.keywordModel,
           timeoutMs: config.keywordTimeoutMs,
+          recentContext,
+          memoryRange: hermesRecallRange(resolveHermesScope(this.projectRoot, this.homeDir)),
           signal: options.signal,
         });
       }
@@ -131,8 +140,10 @@ export class JevNavigator {
           maxTokens: config.memoryCandidateTokens,
           signal: options.signal,
           extraTerms: keywordResult?.terms,
+          queryGroups: keywordResult?.status === 'ready' ? keywordResult.queryGroups : undefined,
+          targets: keywordResult?.status === 'ready' ? keywordResult.memoryTargets : undefined,
           keywordStats: keywordResult ? {
-            terms: keywordResult.terms,
+            terms: keywordResult.terms, queryGroups: keywordResult.queryGroups,
             latencyMs: keywordResult.latencyMs,
             status: keywordResult.status,
           } : undefined,
@@ -140,7 +151,7 @@ export class JevNavigator {
       this.lastMemoryRetrieval = retrieval?.stats;
       const memories = retrieval?.memories ?? [];
       const decision = await this.pipeline.execute({
-        userPrompt, dsl: graph.dsl, estimatedTokens: graph.estimatedTokens, skills, memories, safetyRules,
+        userPrompt: routingTask, dsl: graph.dsl, estimatedTokens: graph.estimatedTokens, skills, memories, safetyRules,
       }, config, options.signal);
       if (decision && retrieval) {
         retrieval.stats.selected = decision.activatedMemoryGuards?.length ?? (decision.activatedMemoryGuard ? 1 : 0);
@@ -183,7 +194,8 @@ export class JevNavigator {
       const fd = fs.openSync(path.join(directory, filename), fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
       try {
         fs.fchmodSync(fd, 0o600);
-        const safeEntry = redactSensitive(entry, [...sensitiveValues(this.getConfig()), this.client.getApiKey() ?? '']);
+        const safeEntry = redactSensitive(entry, [...sensitiveValues(this.getConfig()), this.client.getApiKey() ?? '',
+          ...sensitiveValues(this.keywordExtractor.resolveCPAConfig())]);
         fs.writeFileSync(fd, JSON.stringify(safeEntry) + '\n', 'utf-8');
       } finally { fs.closeSync(fd); }
     } catch { /* logging must never block the agent */ }
@@ -319,7 +331,7 @@ export default function registerJevNavigatorExtension(
       try {
         const decision = await getNavigator(ctx.cwd).evaluatePrompt(args, [], {
           sessionFile: ctx.sessionManager?.getSessionFile?.(), sessionId: ctx.sessionManager?.getSessionId?.(),
-        }, { signal: ctx.signal });
+        }, { signal: ctx.signal, recentContext: collectTaskContext(ctx.sessionManager?.getBranch?.() ?? []) });
         if (!decision) { ctx.ui.notify('Jev bypassed: missing key, timeout or invalid response. Native context is unchanged.', 'warning'); return; }
         ctx.ui.notify([
           '🎯 [Jev Decision Result]',

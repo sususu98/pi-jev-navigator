@@ -2,8 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
-import { parse } from 'jsonc-parser/lib/esm/main.js';
-import { resolveGitContext } from '../graph/git.js';
+import { resolveHermesScope, HERMES_MEMORY_TARGETS, type HermesMemoryTarget } from './hermes-scope.js';
 import { buildMemoryQuestions } from '../jev/prompter.js';
 import type { MemoryGuard, MemoryRetrievalStats } from '../types.js';
 
@@ -16,8 +15,12 @@ export interface RetrievalOptions {
   maxTokens?: number;
   signal?: AbortSignal;
   extraTerms?: string[];
+  /** Model-derived precise lexical conjunctions. Empty ready groups intentionally recall nothing. */
+  queryGroups?: string[][];
+  targets?: HermesMemoryTarget[];
   keywordStats?: {
     terms?: string[];
+    queryGroups?: string[][];
     latencyMs?: number;
     status?: 'ready' | 'bypassed' | 'timeout' | 'error';
   };
@@ -94,6 +97,7 @@ export function memoryFromRow(row: Row): MemoryGuard {
     : row.target === 'user' ? 'preference' : row.target === 'failure' ? 'failure' : 'memory';
   return {
     id: `hermes_${row.id}`, category, project: row.project ?? 'global',
+    sourceTarget: row.target === 'memory' && row.project ? 'project' : row.target as MemoryGuard['sourceTarget'],
     title: row.content.split('\n')[0], rule: row.content,
     // Dates are selection inputs, not evidence of relevance. Do not send duplicate full bodies.
     summary: `${row.content}\n[Hermes scope=${row.project ?? 'global'}; created=${row.created}; last=${row.last_referenced}]`,
@@ -133,25 +137,6 @@ export function boundMemoryCandidates(rows: Row[][], maxCandidates: number, maxT
 export class HermesMemoryRetriever {
   constructor(private homeDir = os.homedir()) {}
 
-  private databasePath(): string {
-    const agent = this.homeDir === os.homedir() && process.env.PI_CODING_AGENT_DIR
-      ? path.resolve(process.env.PI_CODING_AGENT_DIR) : path.join(this.homeDir, '.pi', 'agent');
-    let directory = path.join(agent, 'pi-hermes-memory');
-    const configFile = path.join(agent, 'hermes-memory-config.json');
-    if (fs.existsSync(configFile)) {
-      const errors: any[] = [];
-      const config = parse(fs.readFileSync(configFile, 'utf8'), errors, { allowTrailingComma: true });
-      if (errors.length || !config || typeof config !== 'object') throw new Error('Invalid Hermes configuration');
-      if (typeof config.memoryDir === 'string' && config.memoryDir.trim()) {
-        const value = config.memoryDir.trim();
-        const expanded = value.startsWith('~/') ? path.join(this.homeDir, value.slice(2)) : value;
-        const configured = path.resolve(expanded);
-        // Hermes treats its pre-migration memory directory alias as the modern directory.
-        if (configured !== path.join(agent, 'memory')) directory = configured;
-      }
-    }
-    return path.join(directory, 'sessions.db');
-  }
 
   public retrieve(task: string, projectRoot: string, options: RetrievalOptions = {}): RetrievalResult {
     const start = performance.now();
@@ -165,7 +150,15 @@ export class HermesMemoryRetriever {
       const maxCandidates = Math.min(options.maxCandidates ?? 64, 254);
       const maxTokens = Math.min(options.maxTokens ?? 8000, 28000);
       if (maxCandidates <= 0 || maxTokens <= 0) { stats.status = 'disabled'; return { memories: [], stats }; }
-      const file = this.databasePath();
+      const scope = resolveHermesScope(projectRoot, this.homeDir);
+      const file = path.join(scope.memoryDir, 'sessions.db');
+      stats.project = scope.project;
+      const targets = options.targets ?? [...HERMES_MEMORY_TARGETS];
+      if (targets.some(target => !HERMES_MEMORY_TARGETS.includes(target))) throw new Error('Invalid memory target');
+      stats.targets = [...new Set(targets)];
+      const targetConditions = targets.map(target => target === 'project'
+        ? "(m.target = 'memory' AND m.project IS NOT NULL)" : `m.target = '${target}'`);
+      const targetFilter = targetConditions.length ? ` AND (${targetConditions.join(' OR ')})` : ' AND 0';
       if (!fs.existsSync(file)) { stats.status = 'unavailable'; return { memories: [], stats }; }
       db = new DatabaseSync(file, { readOnly: true });
       db.exec('PRAGMA query_only = ON; PRAGMA busy_timeout = 0; BEGIN');
@@ -174,11 +167,28 @@ export class HermesMemoryRetriever {
       if (!fts?.sql || !/fts5/i.test(fts.sql) || !/trigram/i.test(fts.sql)) {
         stats.status = 'unsupported'; return { memories: [], stats };
       }
-      const project = resolveGitContext(projectRoot).projectName || 'default';
+      const project = scope.project;
       const count = db.prepare('SELECT count(*) AS n FROM memories WHERE project IS NULL OR project = ?').get(project) as { n: number };
       stats.eligible = Number(count.n);
-      const keywordQueries = new Set(buildMemoryQueries('', options.extraTerms));
-      const baselineQueries = buildMemoryQueries(task);
+      stats.searchable = Number((db.prepare(`SELECT count(*) AS n FROM memories m
+        WHERE (m.project IS NULL OR m.project = ?)${targetFilter}`).get(project) as { n: number }).n);
+      const preciseQueries = options.queryGroups?.slice(0, 4).filter(group => Array.isArray(group)
+        && group.length >= 1 && group.length <= 3 && group.every(term => typeof term === 'string'
+          && term.trim().length >= 3 && term.trim().length <= 32))
+        .map(group => group.map(term => {
+          const normalized = term.normalize('NFKC').trim();
+          const quote = (value: string) => `"${value.replace(/"/g, '""')}"`;
+          // Mechanical phrase variants preserve at least two adjacent components
+          // of a compound anchor. Never relax it into independent broad OR words.
+          const parts = normalized.replace(/([\p{Ll}\p{N}])([\p{Lu}])/gu, '$1 $2')
+            .match(/[\p{Script=Latin}\p{N}]+|[\p{Script=Han}]+|[\p{L}\p{N}]+/gu)?.slice(0, 12) ?? [];
+          const phrases = [...new Set([normalized, ...parts.slice(1).map((part, i) => `${parts[i]} ${part}`)])];
+          return `(${phrases.map(quote).join(' OR ')})`;
+        }).join(' AND '));
+      // Successful anchored recall does not expand back into broad OR queries on
+      // misses. Missing/failed expansion still uses the mechanical baseline.
+      const keywordQueries = new Set(preciseQueries ?? buildMemoryQueries('', options.extraTerms));
+      const baselineQueries = preciseQueries === undefined ? buildMemoryQueries(task) : [];
       const querySet = new Set<string>();
       const expandedQueries = [...keywordQueries];
       for (let i = 0; i < Math.max(baselineQueries.length, expandedQueries.length); i++) {
@@ -190,7 +200,7 @@ export class HermesMemoryRetriever {
       // boilerplate views. This orders recall only; Jev still decides applicability.
       const frequencies = new Map(queries.map(query => [query, Number((db!.prepare(`
         SELECT count(*) AS n FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
-        WHERE memory_fts MATCH ? AND (m.project IS NULL OR m.project = ?)` )
+        WHERE memory_fts MATCH ? AND (m.project IS NULL OR m.project = ?)${targetFilter}` )
         .get(query, project) as { n: number }).n)]));
       const fusedRows = new Map<number, Row>();
       const fusedScores = new Map<number, number>();
@@ -200,14 +210,14 @@ export class HermesMemoryRetriever {
       for (const query of queries) {
         const evidence = new Map<number, number>();
         for (const channelType of ['guards', 'lessons', 'general']) {
-          for (const scope of [project, null]) {
+          for (const scope of project === null ? [null] : [project, null]) {
             if (options.signal?.aborted) { stats.status = 'cancelled'; return { memories: [], stats }; }
             stats.queries++;
             const filter = channelType === 'guards' ? " AND (m.category IN ('correction', 'preference') OR m.target = 'user')"
               : channelType === 'lessons' ? " AND m.target = 'failure'" : '';
             const rows = db.prepare(`SELECT m.id,m.project,m.target,m.category,m.content,m.created,m.last_referenced
               FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
-              WHERE memory_fts MATCH ? AND m.project IS ?${filter}
+              WHERE memory_fts MATCH ? AND m.project IS ?${filter}${targetFilter}
               ORDER BY bm25(memory_fts), m.last_referenced DESC, m.id ASC LIMIT ?`)
               .all(query, scope, Math.min(maxCandidates, 20)) as unknown as Row[];
             // A small fresh lexical view lets later corrections compete with old
@@ -215,7 +225,7 @@ export class HermesMemoryRetriever {
             stats.queries++;
             const recent = db.prepare(`SELECT m.id,m.project,m.target,m.category,m.content,m.created,m.last_referenced
               FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
-              WHERE memory_fts MATCH ? AND m.project IS ?${filter}
+              WHERE memory_fts MATCH ? AND m.project IS ?${filter}${targetFilter}
               ORDER BY m.created DESC, m.id DESC LIMIT 4`).all(query, scope) as unknown as Row[];
             const views = [rows, recent];
             for (const view of views) view.forEach((row, rank) => {
@@ -274,6 +284,7 @@ export class HermesMemoryRetriever {
       // Scope diversity remains a recall invariant even when fresh leaders all
       // belong to one scope. Interleave ranked scopes, without semantic filtering.
       const fairScopes = (rows: Row[]) => {
+        if (project === null) return rows;
         const projectRows = rows.filter(row => row.project === project);
         const globalRows = rows.filter(row => row.project === null);
         return Array.from({ length: Math.max(projectRows.length, globalRows.length) }, (_, i) =>
@@ -286,6 +297,7 @@ export class HermesMemoryRetriever {
       if (!bounded.memories.length) stats.status = 'empty';
       if (options.keywordStats) {
         stats.keywordTerms = options.keywordStats.terms;
+        stats.keywordQueryGroups = options.keywordStats.queryGroups;
         stats.keywordLatencyMs = options.keywordStats.latencyMs;
         stats.keywordStatus = options.keywordStats.status;
       }
