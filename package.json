@@ -1,6 +1,6 @@
 {
   "name": "pi-jev-navigator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Ultra-low-token System One context navigation and precision SOP dispatch engine for Pi Coding Agent using TypeSafe Jev & Trie-Folded CodeGraphs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,7 +16,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:ts": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && bun build src/index.ts --outfile dist/index.js --target node --format esm --external @earendil-works/pi-coding-agent && tsc --emitDeclarationOnly",
+    "sync:version": "node scripts/sync-version.mjs",
+    "build:ts": "node scripts/sync-version.mjs && node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && bun build src/index.ts --outfile dist/index.js --target node --format esm --external @earendil-works/pi-coding-agent && tsc --emitDeclarationOnly",
     "build:native": "node scripts/build-native.mjs",
     "build": "bun run build:ts && bun run build:native",
     "typecheck": "tsc --noEmit",

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { boundTaskContext, type TaskContextMessage } from './task-context.js';
 import { HERMES_MEMORY_TARGETS, type HermesMemoryTarget, type HermesRecallRange } from './hermes-scope.js';
+import { USER_AGENT } from '../version.js';
 
 export interface CPAClientConfig {
   baseUrl?: string;
@@ -32,8 +33,8 @@ const SYSTEM_INSTRUCTION_TEXT = [
   "Hermes stores natural-language facts/constraints. Category is not storage target: preferences/corrections can live in failure.",
   "memoryTargets: memory=ordinary global/current-project facts; project=current-project facts (target=memory with project attribution); user=user preferences, including technical/workflow constraints, and personal facts; failure=failures, corrections, insights, preferences, conventions, tool quirks. Project failures stay failure. For constraints include both user and failure; use all targets if uncertain.",
   "Search is SQLite FTS5 trigram lexical matching on content, not embeddings. Strings are quoted literals, not SQL/FTS syntax or category filters. Every string MUST be 3-32 characters, including Chinese; strings shorter than 3 characters cannot match.",
-  "Resolve the underlying task, not just the latest symptom. For diagnosis/evidence collection or a named workflow action (commit, release, review), add a standalone activityPhrase group (2-3 words as saved rules would phrase it, never a bare verb like 'fix'), not conjoined with the component: general activity rules often omit it. Only use activities evidenced by task/context.",
-  "Return compact JSON needsMemory, subject, terms (0-6), queryGroups (0-4 groups of 1-3 strings), memoryTargets. Group strings are ANDed; groups are OR alternatives. Include a subject-only group naming the specific feature/component (e.g. 'session cache key', not 'cache'). Use likely stored source-language phrases, not filenames, the project name, broad provider names or bare generic words; no invented labels.",
+  "Resolve the underlying task, not just the latest symptom. For diagnosis/evidence collection or a named workflow action (commit, release, review), add a standalone activityPhrase group (concise atomic phrase as saved rules phrase it like 'git commit', not invented compound sentences), not conjoined with the component: general activity rules often omit it. Only use activities evidenced by task/context.",
+  "Return compact JSON needsMemory, subject, terms (0-6), queryGroups (0-4 groups of 1-3 strings), memoryTargets. Group strings are ANDed; groups are OR alternatives. Include a subject-only group naming the specific feature/component (e.g. 'session cache key', not 'cache'). Prefer concise atomic technical terms; avoid invented modifier words. Use likely stored source-language phrases, not filenames, the project name, broad provider names or bare generic words; no invented labels.",
   "memory_range fixes global/current-project scope; never name another project. Sessions, pinned instructions and Skill bodies are separate stores. No memory bodies or explanations.",
 ].join(' ');
 
@@ -91,6 +92,7 @@ export class GeminiKeywordExtractor {
       const response = await this.transport(`${cpa.baseUrl.replace(/\/+$/, '')}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
         method: 'POST',
         headers: {
+          'User-Agent': USER_AGENT,
           'Content-Type': 'application/json',
           Authorization: `Bearer ${cpa.apiKey}`,
           'x-goog-api-key': cpa.apiKey,
@@ -182,6 +184,7 @@ export class GeminiKeywordExtractor {
       const response = await this.transport(targetUrl, {
         method: 'POST',
         headers: {
+          'User-Agent': USER_AGENT,
           'Content-Type': 'application/json',
           Authorization: `Bearer ${cpa.apiKey}`,
           'x-goog-api-key': cpa.apiKey,

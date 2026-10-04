@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { JevQuestion, JevSystemOneRequest, JevSystemOneResponse } from '../types.js';
+import { USER_AGENT } from '../version.js';
 import { assertRequestCapacity } from './capacity.js';
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -137,7 +138,7 @@ export class JevClient {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'pi-jev-navigator/1.0.0',
+          'User-Agent': USER_AGENT,
         },
         body: JSON.stringify(fullPayload),
         redirect: 'error',

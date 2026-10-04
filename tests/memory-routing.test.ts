@@ -184,6 +184,7 @@ describe('task-relevant memory routing', () => {
     expect(nav.warmKeywordPath(t0 + 1_000)).toBe(false); // still inside the idle window
     expect(warmups).toHaveLength(1);
     expect(warmups[0].headers['X-Session-ID']).toBe(KEYWORD_SESSION_ID);
+    expect(warmups[0].headers['User-Agent']).toBe('pi-jev-navigator/1.0.1');
     expect(JSON.stringify(warmups[0].body.contents)).not.toContain('SECRET_TASK');
     await nav.evaluatePrompt('SECRET_TASK follow-up', [], { sessionId: 'warm-context' },
       { recentContext: [{ role: 'user', text: 'Implement Orchid capsule' }, { role: 'assistant', text: 'Done' }] });

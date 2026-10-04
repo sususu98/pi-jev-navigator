@@ -36,6 +36,16 @@ function pipeline(transport: typeof fetch): JevDualPipeline {
 }
 
 describe('Jev request boundaries', () => {
+  it('sends User-Agent matching package version', async () => {
+    let capturedHeaders: any;
+    const transport = (async (_url: any, init: any) => {
+      capturedHeaders = init?.headers;
+      return Response.json(responseFor(request));
+    }) as typeof fetch;
+    const client = new JevClient('https://fixture.invalid', 'test', 'FAKE', undefined, '/unused', transport);
+    await client.evaluate(request, 1000);
+    expect(capturedHeaders?.['User-Agent']).toBe('pi-jev-navigator/1.0.1');
+  });
   it('covers delayed success and error bodies with the deadline and cancels streams', async () => {
     for (const status of [200, 503]) {
       const fake = delayedBody(500, status);

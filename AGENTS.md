@@ -1,4 +1,4 @@
-# AGENTS.md — pi-jev-navigator Developer & Agent Guide
+# AGENTS.md — pi-jev-navigator v1.0.1 Developer & Agent Guide
 > End every completed task with a **喵**
 
 `pi-jev-navigator` is a TypeSafe Jev (`jev-latest`) System One navigation and context governance extension for Pi Coding Agent. It provides compact CodeGraph overview routing, tail navigation injection, Hermes memory guard protection, dual-pipeline execution, and Git Worktree awareness.
