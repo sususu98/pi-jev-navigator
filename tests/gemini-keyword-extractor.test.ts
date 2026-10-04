@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { GeminiKeywordExtractor } from '../src/memory/gemini-keyword-extractor.ts';
+import { GeminiKeywordExtractor, KEYWORD_SESSION_ID } from '../src/memory/gemini-keyword-extractor.ts';
 
 describe('GeminiKeywordExtractor', () => {
   const dummyConfig = {
@@ -44,7 +44,8 @@ describe('GeminiKeywordExtractor', () => {
     expect(result.status).toBe('ready');
     expect(result.terms).toEqual(['prefix cache', 'local-cpa', 'timeout investigation']);
     expect(capturedUrl).toContain('/v1beta/models/gemini-3.8-flash:generateContent');
-    expect(capturedHeaders['X-Session-ID']).toBe('jev-keyword-extractor');
+    expect(capturedHeaders['X-Session-ID']).toBe(KEYWORD_SESSION_ID);
+    expect(KEYWORD_SESSION_ID).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(capturedHeaders['x-goog-api-key']).toBe('sk-test-dummy-key');
     expect(capturedBody.systemInstruction?.parts?.[0]?.text).toContain('Jev Memory Keyword Extractor');
     expect(capturedBody.generationConfig?.thinkingConfig?.thinkingBudget).toBe(0);

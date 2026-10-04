@@ -21,6 +21,8 @@ export interface ExtractionResult {
 /** Defaults shared with the config store; override via keywordModel/keywordTimeoutMs. */
 export const DEFAULT_KEYWORD_MODEL = 'gemini-3.8-flash';
 export const DEFAULT_KEYWORD_TIMEOUT_MS = 7000;
+/** Constant RFC 4122 v4 UUID: stable session affinity for the local CPA upstream pool across all prompts. */
+export const KEYWORD_SESSION_ID = 'e6dfaabe-993c-4ff4-82b5-e17a2ead7ed5';
 
 // Fixed, compact storage/query contract; task data stays in contents, never here.
 const SYSTEM_INSTRUCTION_TEXT = [
@@ -92,7 +94,7 @@ export class GeminiKeywordExtractor {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${cpa.apiKey}`,
           'x-goog-api-key': cpa.apiKey,
-          'X-Session-ID': 'jev-keyword-extractor',
+          'X-Session-ID': KEYWORD_SESSION_ID,
         },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION_TEXT }] },
@@ -183,7 +185,7 @@ export class GeminiKeywordExtractor {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${cpa.apiKey}`,
           'x-goog-api-key': cpa.apiKey,
-          'X-Session-ID': 'jev-keyword-extractor',
+          'X-Session-ID': KEYWORD_SESSION_ID,
         },
         body: JSON.stringify(payload),
         signal: controller.signal,

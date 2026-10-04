@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { JevNavigator } from '../src/index.ts';
+import { KEYWORD_SESSION_ID } from '../src/memory/gemini-keyword-extractor.ts';
 import { MemoryCollector } from '../src/memory/collector.ts';
 import { JevPrompter } from '../src/jev/prompter.ts';
 import type { JevSystemOneRequest, MemoryGuard } from '../src/types.ts';
@@ -182,7 +183,7 @@ describe('task-relevant memory routing', () => {
     release(); await new Promise(resolve => setTimeout(resolve, 0));
     expect(nav.warmKeywordPath(t0 + 1_000)).toBe(false); // still inside the idle window
     expect(warmups).toHaveLength(1);
-    expect(warmups[0].headers['X-Session-ID']).toBe('jev-keyword-extractor');
+    expect(warmups[0].headers['X-Session-ID']).toBe(KEYWORD_SESSION_ID);
     expect(JSON.stringify(warmups[0].body.contents)).not.toContain('SECRET_TASK');
     await nav.evaluatePrompt('SECRET_TASK follow-up', [], { sessionId: 'warm-context' },
       { recentContext: [{ role: 'user', text: 'Implement Orchid capsule' }, { role: 'assistant', text: 'Done' }] });
