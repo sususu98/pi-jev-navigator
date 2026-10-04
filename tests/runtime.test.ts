@@ -32,6 +32,7 @@ function harness(options: { cfg?: JevNavigatorConfig; hasKey?: boolean; evaluate
     getConfigStore: () => ({ getDiagnostics: () => [] }),
     getStatus: () => { throw new Error('expensive status must not run during hooks'); },
     evaluatePrompt: mock(options.evaluate ?? (async () => decision())),
+    warmKeywordPath: mock(() => true),
   };
   register({
     on(name: string, handler: any) { events.set(name, [...(events.get(name) ?? []), handler]); },
@@ -165,6 +166,24 @@ describe('Pi lifecycle integration', () => {
     const steered = await h.emit('context_with_system', { messages: updated }, ctx);
     expect(steered.messages[1]).toEqual(first.messages[1]);
     expect(steered.messages[4]).toEqual(updated[4]);
+  });
+
+  it('observes terminal input to warm the keyword path without consuming keystrokes', async () => {
+    const h = harness();
+    const ctx = context(); ctx.hasUI = true;
+    const unsubscribe = mock();
+    let handler: any;
+    ctx.ui.onTerminalInput = mock((fn: any) => { handler = fn; return unsubscribe; });
+    await h.emit('session_start', {}, ctx);
+    expect(ctx.ui.onTerminalInput).toHaveBeenCalledTimes(1);
+    expect(handler('a')).toBeUndefined();
+    expect(h.nav.warmKeywordPath).toHaveBeenCalledTimes(1);
+    await h.emit('session_start', {}, ctx); // reload replaces, never stacks listeners
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    await h.emit('session_shutdown', {}, ctx);
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
+    h.nav.warmKeywordPath.mockImplementation(() => { throw new Error('boom'); });
+    expect(handler('b')).toBeUndefined();
   });
 
   it('passes active branch context independently to normal and steering routing', async () => {

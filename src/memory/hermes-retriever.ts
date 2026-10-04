@@ -18,6 +18,8 @@ export interface RetrievalOptions {
   /** Model-derived precise lexical conjunctions. Empty ready groups intentionally recall nothing. */
   queryGroups?: string[][];
   targets?: HermesMemoryTarget[];
+  /** Bounded prior user requests; used only by the mechanical fallback (no model plan, or a plan with zero hits). */
+  contextText?: string;
   keywordStats?: {
     terms?: string[];
     queryGroups?: string[][];
@@ -185,10 +187,22 @@ export class HermesMemoryRetriever {
           const phrases = [...new Set([normalized, ...parts.slice(1).map((part, i) => `${parts[i]} ${part}`)])];
           return `(${phrases.map(quote).join(' OR ')})`;
         }).join(' AND '));
-      // Successful anchored recall does not expand back into broad OR queries on
-      // misses. Missing/failed expansion still uses the mechanical baseline.
+      // Successful anchored recall is not mixed with broad OR queries; only a plan
+      // with zero hits falls back. Missing/failed expansion uses the mechanical baseline.
       const keywordQueries = new Set(preciseQueries ?? buildMemoryQueries('', options.extraTerms));
-      const baselineQueries = preciseQueries === undefined ? buildMemoryQueries(task) : [];
+      // Without a model plan, short follow-ups ("continue", "fix it") still recall
+      // through prior user requests. Current-request views keep first priority.
+      const mechanicalBaseline = () => {
+        const currentQueries = buildMemoryQueries(task);
+        const contextQueries = options.contextText?.trim() ? buildMemoryQueries(options.contextText) : [];
+        const baselineSet = new Set<string>();
+        for (let i = 0; i < Math.max(currentQueries.length, contextQueries.length); i++) {
+          if (currentQueries[i]) baselineSet.add(currentQueries[i]);
+          if (contextQueries[i]) baselineSet.add(contextQueries[i]);
+        }
+        return [...baselineSet];
+      };
+      const baselineQueries = preciseQueries === undefined ? mechanicalBaseline() : [];
       const querySet = new Set<string>();
       const expandedQueries = [...keywordQueries];
       for (let i = 0; i < Math.max(baselineQueries.length, expandedQueries.length); i++) {
@@ -198,54 +212,64 @@ export class HermesMemoryRetriever {
       const queries = [...querySet].slice(0, 32);
       // Lexical document frequency gives precise views a fair chance before broad
       // boilerplate views. This orders recall only; Jev still decides applicability.
-      const frequencies = new Map(queries.map(query => [query, Number((db!.prepare(`
-        SELECT count(*) AS n FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
-        WHERE memory_fts MATCH ? AND (m.project IS NULL OR m.project = ?)${targetFilter}` )
-        .get(query, project) as { n: number }).n)]));
       const fusedRows = new Map<number, Row>();
       const fusedScores = new Map<number, number>();
       const keywordScores = new Map<number, number>();
       const matchedViews = new Map<number, Map<string, number>>();
       const guardIds = new Set<number>();
-      for (const query of queries) {
-        const evidence = new Map<number, number>();
-        for (const channelType of ['guards', 'lessons', 'general']) {
-          for (const scope of project === null ? [null] : [project, null]) {
-            if (options.signal?.aborted) { stats.status = 'cancelled'; return { memories: [], stats }; }
-            stats.queries++;
-            const filter = channelType === 'guards' ? " AND (m.category IN ('correction', 'preference') OR m.target = 'user')"
-              : channelType === 'lessons' ? " AND m.target = 'failure'" : '';
-            const rows = db.prepare(`SELECT m.id,m.project,m.target,m.category,m.content,m.created,m.last_referenced
-              FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
-              WHERE memory_fts MATCH ? AND m.project IS ?${filter}${targetFilter}
-              ORDER BY bm25(memory_fts), m.last_referenced DESC, m.id ASC LIMIT ?`)
-              .all(query, scope, Math.min(maxCandidates, 20)) as unknown as Row[];
-            // A small fresh lexical view lets later corrections compete with old
-            // highly repeated records. Recency is recall diversity, not applicability.
-            stats.queries++;
-            const recent = db.prepare(`SELECT m.id,m.project,m.target,m.category,m.content,m.created,m.last_referenced
-              FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
-              WHERE memory_fts MATCH ? AND m.project IS ?${filter}${targetFilter}
-              ORDER BY m.created DESC, m.id DESC LIMIT 4`).all(query, scope) as unknown as Row[];
-            const views = [rows, recent];
-            for (const view of views) view.forEach((row, rank) => {
-              fusedRows.set(row.id, row);
-              if (channelType !== 'general') guardIds.add(row.id);
-              // Overlapping category channels count once per lexical view.
-              evidence.set(row.id, Math.max(evidence.get(row.id) ?? 0, 1 / (60 + rank + 1)));
-            });
+      const recall = (queries: string[]): boolean => {
+        const frequencies = new Map(queries.map(query => [query, Number((db!.prepare(`
+          SELECT count(*) AS n FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
+          WHERE memory_fts MATCH ? AND (m.project IS NULL OR m.project = ?)${targetFilter}` )
+          .get(query, project) as { n: number }).n)]));
+        for (const query of queries) {
+          const evidence = new Map<number, number>();
+          for (const channelType of ['guards', 'lessons', 'general']) {
+            for (const scope of project === null ? [null] : [project, null]) {
+              if (options.signal?.aborted) return false;
+              stats.queries++;
+              const filter = channelType === 'guards' ? " AND (m.category IN ('correction', 'preference') OR m.target = 'user')"
+                : channelType === 'lessons' ? " AND m.target = 'failure'" : '';
+              const rows = db!.prepare(`SELECT m.id,m.project,m.target,m.category,m.content,m.created,m.last_referenced
+                FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
+                WHERE memory_fts MATCH ? AND m.project IS ?${filter}${targetFilter}
+                ORDER BY bm25(memory_fts), m.last_referenced DESC, m.id ASC LIMIT ?`)
+                .all(query, scope, Math.min(maxCandidates, 20)) as unknown as Row[];
+              // A small fresh lexical view lets later corrections compete with old
+              // highly repeated records. Recency is recall diversity, not applicability.
+              stats.queries++;
+              const recent = db!.prepare(`SELECT m.id,m.project,m.target,m.category,m.content,m.created,m.last_referenced
+                FROM memories m JOIN memory_fts ON memory_fts.rowid=m.id
+                WHERE memory_fts MATCH ? AND m.project IS ?${filter}${targetFilter}
+                ORDER BY m.created DESC, m.id DESC LIMIT 4`).all(query, scope) as unknown as Row[];
+              const views = [rows, recent];
+              for (const view of views) view.forEach((row, rank) => {
+                fusedRows.set(row.id, row);
+                if (channelType !== 'general') guardIds.add(row.id);
+                // Overlapping category channels count once per lexical view.
+                evidence.set(row.id, Math.max(evidence.get(row.id) ?? 0, 1 / (60 + rank + 1)));
+              });
+            }
+          }
+          const weight = 1 / Math.sqrt(Math.max(1, frequencies.get(query)!));
+          // Correlated variants of one identifier must not accumulate unrestricted
+          // votes. Retain the strongest lexical view; additional hits are not semantics.
+          for (const [id, score] of evidence) {
+            fusedScores.set(id, Math.max(fusedScores.get(id) ?? 0, weight * score));
+            if (keywordQueries.has(query)) keywordScores.set(id, Math.max(keywordScores.get(id) ?? 0, weight * score));
+            let views = matchedViews.get(id);
+            if (!views) { views = new Map(); matchedViews.set(id, views); }
+            views.set(query, weight * score);
           }
         }
-        const weight = 1 / Math.sqrt(Math.max(1, frequencies.get(query)!));
-        // Correlated variants of one identifier must not accumulate unrestricted
-        // votes. Retain the strongest lexical view; additional hits are not semantics.
-        for (const [id, score] of evidence) {
-          fusedScores.set(id, Math.max(fusedScores.get(id) ?? 0, weight * score));
-          if (keywordQueries.has(query)) keywordScores.set(id, Math.max(keywordScores.get(id) ?? 0, weight * score));
-          let views = matchedViews.get(id);
-          if (!views) { views = new Map(); matchedViews.set(id, views); }
-          views.set(query, weight * score);
-        }
+        return true;
+      };
+      if (!recall(queries)) { stats.status = 'cancelled'; return { memories: [], stats }; }
+      // A model plan that matches nothing must not hide the task's own lexical
+      // evidence. A deliberate empty plan (needsMemory=false) still recalls nothing.
+      if (preciseQueries?.length && !fusedRows.size) {
+        stats.keywordFallback = 'zero-hit';
+        if (!recall(mechanicalBaseline().slice(0, 32))) { stats.status = 'cancelled'; return { memories: [], stats }; }
       }
       // Prefer lexical evidence per serialized byte under the fixed budget. Whole
       // long records remain eligible; they cannot monopolize recall just because

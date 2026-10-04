@@ -6,6 +6,7 @@ import { JevNavigatorConfig, ExecutionMode } from '../types.js';
 import { resolveGitContext } from '../graph/git.js';
 import { isProtectedConfigPath, writeSafeConfig } from './safe-file.js';
 import { redactSensitive, sensitiveValues } from './redact.js';
+import { DEFAULT_KEYWORD_MODEL, DEFAULT_KEYWORD_TIMEOUT_MS } from '../memory/gemini-keyword-extractor.js';
 
 export const { applyEdits, modify, parse } = jsonc;
 export type ParseError = jsonc.ParseError;
@@ -31,8 +32,8 @@ export const DEFAULT_CONFIG: Required<Omit<JevNavigatorConfig, 'apiKey' | 'keyFi
   memoryCandidateLimit: 64,
   memoryCandidateTokens: 8000,
   enableKeywordExpansion: true,
-  keywordModel: 'gemini-3.5-flash-lite',
-  keywordTimeoutMs: 1200,
+  keywordModel: DEFAULT_KEYWORD_MODEL,
+  keywordTimeoutMs: DEFAULT_KEYWORD_TIMEOUT_MS,
   cacheTtlDays: 7,
   logDecisions: true,
   ignoreDirs: [

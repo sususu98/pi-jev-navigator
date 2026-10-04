@@ -43,12 +43,44 @@ describe('GeminiKeywordExtractor', () => {
 
     expect(result.status).toBe('ready');
     expect(result.terms).toEqual(['prefix cache', 'local-cpa', 'timeout investigation']);
-    expect(capturedUrl).toContain('/v1beta/models/gemini-3.5-flash-lite:generateContent');
+    expect(capturedUrl).toContain('/v1beta/models/gemini-3.8-flash:generateContent');
     expect(capturedHeaders['X-Session-ID']).toBe('jev-keyword-extractor');
     expect(capturedHeaders['x-goog-api-key']).toBe('sk-test-dummy-key');
     expect(capturedBody.systemInstruction?.parts?.[0]?.text).toContain('Jev Memory Keyword Extractor');
     expect(capturedBody.generationConfig?.thinkingConfig?.thinkingBudget).toBe(0);
     expect(capturedBody.generationConfig?.responseMimeType).toBe('application/json');
+  });
+
+  it('keeps a compact fixed Hermes storage/query contract independent of task data', async () => {
+    const requests: any[] = [];
+    const extractor = new GeminiKeywordExtractor('/tmp', (async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+        needsMemory: true, subject: 'Orchid capsule', terms: ['Orchid capsule'],
+        queryGroups: [['Orchid capsule']], memoryTargets: ['memory', 'user', 'failure', 'project'],
+      }) }] } }] });
+    }) as typeof fetch, dummyConfig);
+    const memoryRange = { project: 'TASK_SCOPE_MARKER', scopes: ['global', 'current-project'] as Array<'global' | 'current-project'>,
+      targets: ['memory', 'user', 'failure', 'project'] as const };
+    await extractor.extract('TASK_REQUEST_MARKER', { memoryRange,
+      recentContext: [{ role: 'assistant', text: 'TASK_CONTEXT_MARKER' }] });
+    await extractor.extract('ANOTHER_REQUEST_MARKER');
+
+    const instruction = requests[0].systemInstruction.parts[0].text;
+    expect(instruction.length).toBeLessThanOrEqual(2400);
+    expect(requests[0].systemInstruction).toEqual(requests[1].systemInstruction);
+    for (const marker of ['TASK_REQUEST_MARKER', 'TASK_CONTEXT_MARKER', 'TASK_SCOPE_MARKER', 'ANOTHER_REQUEST_MARKER']) {
+      expect(instruction).not.toContain(marker);
+    }
+    for (const detail of ['Category is not storage target', 'Project failures stay failure',
+      'SQLite FTS5 trigram', 'not SQL/FTS syntax', 'shorter than 3 characters',
+      'ANDed', 'OR alternatives', 'subject-only group', 'For constraints include both user and failure',
+      'activityPhrase', 'including Chinese',
+      'never name another project', 'Skill bodies are separate stores']) {
+      expect(instruction).toContain(detail);
+    }
+    expect(JSON.parse(requests[0].contents[0].parts[0].text).memory_range).toEqual(memoryRange);
+    expect(requests[0].generationConfig.thinkingConfig.thinkingBudget).toBe(0);
   });
 
   it('sends bounded recent context as data with a constant system prompt and parses precise groups', async () => {
@@ -89,6 +121,24 @@ describe('GeminiKeywordExtractor', () => {
       expect(result.terms).toEqual([]);
       expect(result.queryGroups).toBeUndefined();
     }
+  });
+
+  it('drops only out-of-range conjunctions and keeps valid model groups', async () => {
+    const plan = (value: unknown) => new GeminiKeywordExtractor('/tmp', (async () => Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(value) }] } }] })) as typeof fetch, dummyConfig);
+    const salvaged = await plan({ needsMemory: true, subject: 'signature kv cache', terms: [], memoryTargets: ['project'],
+      queryGroups: [['executor helps signature_kv_capture'], ['signature kv', 'ab'], ['FIFO eviction']] }).extract('fix');
+    expect(salvaged.status).toBe('ready');
+    expect(salvaged.queryGroups).toEqual([['signature kv cache'], ['FIFO eviction']]);
+    const badSubject = await plan({ needsMemory: true, subject: 'a much longer subject phrase than allowed', terms: [],
+      memoryTargets: ['project'], queryGroups: [['FIFO eviction']] }).extract('fix');
+    expect(badSubject.queryGroups).toEqual([['FIFO eviction']]);
+    const subjectOnly = await plan({ needsMemory: true, subject: 'signature kv cache', terms: [], memoryTargets: ['project'],
+      queryGroups: [['executor helps signature_kv_capture']] }).extract('fix');
+    expect(subjectOnly.queryGroups).toEqual([['signature kv cache']]);
+    const nothingValid = await plan({ needsMemory: true, subject: 'a much longer subject phrase than allowed', terms: [],
+      memoryTargets: ['project'], queryGroups: [['executor helps signature_kv_capture']] }).extract('fix');
+    expect(nothingValid.status).toBe('error'); // invalid output is never an intentional narrow plan
   });
 
   it('keeps a dedicated subject-only anchor apart from workflow refinements', async () => {

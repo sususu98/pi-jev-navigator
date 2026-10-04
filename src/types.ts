@@ -115,6 +115,8 @@ export interface MemoryRetrievalStats {
   searchable?: number;
   keywordLatencyMs?: number;
   keywordStatus?: 'ready' | 'bypassed' | 'timeout' | 'error';
+  /** Set when a non-empty model plan matched nothing and the mechanical baseline ran. */
+  keywordFallback?: 'zero-hit';
 }
 
 export interface DispatchDecision {
@@ -187,9 +189,9 @@ export interface JevNavigatorConfig {
   memoryCandidateTokens?: number;
   /** Whether to use fast Gemini upstream to expand memory search queries (default true). */
   enableKeywordExpansion?: boolean;
-  /** Upstream model for memory keyword expansion (default 'gemini-3.5-flash-lite'). */
+  /** Upstream model for memory keyword expansion (default 'gemini-3.8-flash'). */
   keywordModel?: string;
-  /** Maximum time budget for memory keyword extraction before fallback (default 1200ms). */
+  /** Maximum time budget for memory keyword extraction before fallback (default 7000ms). */
   keywordTimeoutMs?: number;
   cacheTtlDays?: number;
   logDecisions?: boolean;

@@ -43,6 +43,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
   const steeringRuns = new Map<string, SteeringItem[]>();
   const ledger = new NavigationTailLedger(pi);
   const skillPolicy = new SessionSkillPolicy(pi);
+  const warmSubscriptions = new Map<string, () => void>();
   const keyFor = (ctx: ExtensionContext) => JSON.stringify([
     path.resolve(ctx.cwd), ctx.sessionManager?.getSessionId?.() ?? ctx.sessionManager?.getSessionFile?.() ?? '',
   ]);
@@ -60,6 +61,17 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
           ctx.ui.setStatus('jev', nav.hasApiKey() ? '⚡ Jev Active' : '⚠️ Jev (No API Key)');
         }
         for (const diagnostic of nav.getConfigStore().getDiagnostics()) ctx.ui.notify(diagnostic, 'warning');
+        // Typing after an idle period warms the keyword path before the prompt is submitted.
+        // Observe only: never consume or rewrite terminal input.
+        warmSubscriptions.get(keyFor(ctx))?.();
+        warmSubscriptions.delete(keyFor(ctx));
+        if (!isJevDisabled(ctx) && typeof ctx.ui.onTerminalInput === 'function') {
+          const cwd = ctx.cwd;
+          warmSubscriptions.set(keyFor(ctx), ctx.ui.onTerminalInput(() => {
+            try { getNavigator(cwd).warmKeywordPath(); } catch { /* best effort */ }
+            return undefined;
+          }));
+        }
       }
     } catch {
       // Missing/unreadable local state must not prevent the main agent from starting.
@@ -262,5 +274,7 @@ export function registerRuntimeHooks(pi: ExtensionAPI, getNavigator: (cwd: strin
     steeringRuns.delete(keyFor(ctx));
     ledger.clearFallback(keyFor(ctx));
     skillPolicy.clear(keyFor(ctx));
+    warmSubscriptions.get(keyFor(ctx))?.();
+    warmSubscriptions.delete(keyFor(ctx));
   });
 }

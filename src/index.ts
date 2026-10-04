@@ -7,7 +7,7 @@ import { GitNexusAdapter } from './graph/gitnexus-adapter.js';
 import { SkillCollector } from './skills/collector.js';
 import { HermesMemoryRetriever } from './memory/hermes-retriever.js';
 import { GeminiKeywordExtractor } from './memory/gemini-keyword-extractor.js';
-import { boundTaskContext, collectTaskContext, contextualRoutingTask, type TaskContextMessage } from './memory/task-context.js';
+import { boundTaskContext, collectTaskContext, contextualRoutingTask, taskContextStats, type TaskContextMessage, type TaskContextStats } from './memory/task-context.js';
 import { resolveHermesScope, hermesRecallRange } from './memory/hermes-scope.js';
 import { TTLStore } from './cache/ttl-store.js';
 import { JevClient } from './jev/client.js';
@@ -22,6 +22,9 @@ import { registerRuntimeHooks } from './runtime.js';
 import type { JevNavigatorConfig, DispatchDecision, SkillSummary, MemoryRetrievalStats } from './types.js';
 
 interface SessionMeta { sessionFile?: string; sessionId?: string }
+/** Upstream connections idle longer than this were observed to answer much slower. */
+export const KEYWORD_WARM_IDLE_MS = 90_000;
+
 interface EvaluationOptions { skills?: SkillSummary[]; signal?: AbortSignal; recentContext?: TaskContextMessage[] }
 
 export class JevNavigator {
@@ -38,6 +41,8 @@ export class JevNavigator {
   private injector = new TailInjector();
   private projectRoot: string;
   private lastDecision?: DispatchDecision;
+  private lastKeywordActivity = 0;
+  private keywordWarming?: Promise<boolean>;
 
   constructor(projectRoot: string = process.cwd(), config: JevNavigatorConfig = {}, private homeDir: string = os.homedir(), transport: typeof fetch = globalThis.fetch) {
     this.projectRoot = path.resolve(projectRoot);
@@ -57,6 +62,21 @@ export class JevNavigator {
     return redactSensitive(this.getConfig(), [this.client.getApiKey() ?? '']);
   }
   public hasApiKey(): boolean { return !!this.client.getApiKey(); }
+
+  /**
+   * Warm the keyword path (local CPA -> upstream) when the user starts typing after an
+   * idle period, so the next prompt does not pay a cold upstream connection. At most one
+   * in flight; carries no task data and never affects routing decisions.
+   */
+  public warmKeywordPath(now: number = Date.now()): boolean {
+    const config = this.configStore.get();
+    if (config.enableMemories === false || config.enableKeywordExpansion === false || !this.hasApiKey()) return false;
+    if (this.keywordWarming || now - this.lastKeywordActivity < KEYWORD_WARM_IDLE_MS) return false;
+    this.lastKeywordActivity = now;
+    this.keywordWarming = this.keywordExtractor.warm({ model: config.keywordModel })
+      .finally(() => { this.keywordWarming = undefined; });
+    return true;
+  }
 
   public getOrGenerateCodeGraph(forceRefresh: boolean = false): {
     dsl: string; totalFiles: number; totalSymbols: number; estimatedTokens: number; fromCache: boolean;
@@ -103,6 +123,7 @@ export class JevNavigator {
     const started = Date.now();
     this.lastDecision = undefined;
     this.lastMemoryRetrieval = undefined;
+    let contextFields: { task_context?: TaskContextStats } = {};
     try {
       if (!this.hasApiKey() || options.signal?.aborted) return null;
       const secrets = [...sensitiveValues(config), this.client.getApiKey() ?? '',
@@ -110,8 +131,10 @@ export class JevNavigator {
       const recentContext = redactSensitive(boundTaskContext(options.recentContext), secrets) as TaskContextMessage[];
       const safePrompt = redactSensitive(userPrompt, secrets) as string;
       const routingTask = contextualRoutingTask(safePrompt, recentContext);
+      contextFields = { task_context: taskContextStats(recentContext) };
       let keywordPromise: ReturnType<GeminiKeywordExtractor['extract']> | undefined;
       if (config.enableMemories !== false && config.enableKeywordExpansion !== false) {
+        this.lastKeywordActivity = Date.now();
         keywordPromise = this.keywordExtractor.extract(safePrompt, {
           model: config.keywordModel,
           timeoutMs: config.keywordTimeoutMs,
@@ -142,6 +165,8 @@ export class JevNavigator {
           extraTerms: keywordResult?.terms,
           queryGroups: keywordResult?.status === 'ready' ? keywordResult.queryGroups : undefined,
           targets: keywordResult?.status === 'ready' ? keywordResult.memoryTargets : undefined,
+          contextText: recentContext.filter(message => message.role === 'user' && !message.anchor)
+            .map(message => message.text).join('\n'),
           keywordStats: keywordResult ? {
             terms: keywordResult.terms, queryGroups: keywordResult.queryGroups,
             latencyMs: keywordResult.latencyMs,
@@ -158,16 +183,16 @@ export class JevNavigator {
         decision.memoryRetrieval = retrieval.stats;
       }
       if (!decision || decision.bypassed) {
-        this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision?.bypassReason ?? 'timeout_or_error', latency_ms: Date.now() - started, memory_retrieval: retrieval?.stats,
+        this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision?.bypassReason ?? 'timeout_or_error', latency_ms: Date.now() - started, ...contextFields, memory_retrieval: retrieval?.stats,
           request_usage: decision?.requestUsage, completed_input_tokens: decision?.requestUsage?.reduce((sum, request) => sum + request.inputTokens, 0) }, sessionMeta);
         return null;
       }
       decision.latencyMs = Date.now() - started; // include local catalog/graph collection
       this.lastDecision = decision;
-      this.logDecisionToFile(userPrompt, decision, sessionMeta);
+      this.logDecisionToFile(userPrompt, decision, sessionMeta, contextFields);
       return decision;
     } catch (error) {
-      this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: error instanceof Error ? error.message : 'error' }, sessionMeta);
+      this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: error instanceof Error ? error.message : 'error', ...contextFields }, sessionMeta);
       return null;
     }
   }
@@ -201,15 +226,15 @@ export class JevNavigator {
     } catch { /* logging must never block the agent */ }
   }
 
-  public logDecisionToFile(userPrompt: string, decision: DispatchDecision, sessionMeta?: SessionMeta): void {
+  public logDecisionToFile(userPrompt: string, decision: DispatchDecision, sessionMeta?: SessionMeta, extra: Record<string, unknown> = {}): void {
     if (decision.bypassed) {
-      this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision.bypassReason,
+      this.writeTelemetry(userPrompt, { bypassed: true, bypass_reason: decision.bypassReason, ...extra,
         request_usage: decision.requestUsage, completed_input_tokens: decision.requestUsage?.reduce((sum, request) => sum + request.inputTokens, 0) }, sessionMeta);
       return;
     }
     const guards = decision.activatedMemoryGuards ?? (decision.activatedMemoryGuard ? [decision.activatedMemoryGuard] : []);
     this.writeTelemetry(userPrompt, {
-      latency_ms: decision.latencyMs, input_tokens: decision.inputTokens,
+      latency_ms: decision.latencyMs, input_tokens: decision.inputTokens, ...extra,
       pipeline_mode: decision.pipelineMode, token_breakdown: decision.tokenBreakdown,
       request_usage: decision.requestUsage, estimated_capacity: decision.estimatedCapacity,
       memory_retrieval: decision.memoryRetrieval,

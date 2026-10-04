@@ -9,6 +9,7 @@ import { JevPrompter } from '../src/jev/prompter.ts';
 import { JevNavigator } from '../src/index.ts';
 import { formatMemoryRetrieval, formatTokens } from '../src/jev/stats.ts';
 import { makeHermesDatabase } from './memory-support.ts';
+import { GeminiKeywordExtractor } from '../src/memory/gemini-keyword-extractor.ts';
 import { put, responseFor } from './support.ts';
 
 let base: string, home: string, root: string;
@@ -238,12 +239,65 @@ describe('read-only Hermes retrieval', () => {
     const retriever = new HermesMemoryRetriever(home);
     const result = retriever.retrieve('continue', root, { extraTerms: ['Orchid', 'capsule'], queryGroups: [['Orchid', 'capsule']] });
     expect(result.memories.map(memory => memory.rule)).toEqual(['Orchid capsule tenant isolation']);
-    expect(retriever.retrieve('Orchid', root, { queryGroups: [['Orchid', 'absent']] }).memories).toEqual([]);
+    // A plan with zero hits falls back to the task's own lexical evidence; Jev still judges applicability.
+    const zeroHit = retriever.retrieve('Orchid', root, { queryGroups: [['Orchid', 'absent']] });
+    expect(zeroHit.stats.keywordFallback).toBe('zero-hit');
+    expect(zeroHit.memories.length).toBeGreaterThan(0);
+    expect(retriever.retrieve('continue', root, { queryGroups: [['Orchid', 'absent']] }).memories).toEqual([]);
     expect(retriever.retrieve('Orchid', root, { extraTerms: ['Orchid'], queryGroups: [] }).memories).toEqual([]);
     expect(retriever.retrieve('Orchid', root).memories.length).toBeGreaterThan(0);
     const compound = retriever.retrieve('continue', root, { queryGroups: [['cross-protocol-Orchid_capsule']] });
     expect(compound.memories.some(memory => memory.rule.includes('tenant isolation'))).toBe(true);
     expect(compound.memories.some(memory => memory.rule.includes('unrelated'))).toBe(false);
+  });
+
+  it('supports model-planned activity constraints whose memory omits the component name', async () => {
+    makeHermesDatabase(home, [
+      { content: 'Orchid capsule 缓存需要保持历史前缀', target: 'memory', project: 'CPA' },
+      { content: '日志取证必须关联会话标识、请求标识与日志正文', target: 'failure', category: 'preference' },
+      { content: '日志取证无关项目秘密', target: 'failure', project: 'other' },
+      { content: '数据库维护与当前任务无关', target: 'memory', project: 'CPA' },
+      { content: '日志取证工作偏好：每次分析都需附带证据路径', target: 'user', category: 'preference' },
+    ]);
+    const extractor = new GeminiKeywordExtractor(home, (async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      const data = JSON.parse(request.contents[0].parts[0].text);
+      expect(data.current_request).toBe('改了思考等级，又掉缓存'.normalize('NFKC'));
+      expect(data.recent_context[0].text).toContain('Orchid capsule');
+      expect(JSON.stringify(request)).not.toContain('日志取证必须关联');
+      return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+        needsMemory: true, subject: 'Orchid capsule', terms: ['Orchid capsule', '日志取证'],
+        queryGroups: [['Orchid capsule'], ['日志取证']], memoryTargets: ['memory', 'failure', 'user'],
+      }) }] } }] });
+    }) as typeof fetch, { baseUrl: 'http://example.invalid', apiKey: 'FAKE' });
+    const plan = await extractor.extract('改了思考等级，又掉缓存', {
+      recentContext: [{ role: 'user', text: '继续分析 Orchid capsule 的请求日志，排查缓存异常' }],
+    });
+    expect(plan.status).toBe('ready');
+    const result = new HermesMemoryRetriever(home).retrieve('改了思考等级，又掉缓存', root, {
+      queryGroups: plan.queryGroups, targets: plan.memoryTargets,
+    });
+    expect(result.stats.candidateIds?.sort()).toEqual(['hermes_1', 'hermes_2', 'hermes_5']);
+    expect(result.memories.find(memory => memory.id === 'hermes_5')?.sourceTarget).toBe('user');
+    expect(result.memories.find(memory => memory.id === 'hermes_2')?.sourceTarget).toBe('failure');
+    expect(JSON.stringify(result)).not.toContain('无关项目秘密');
+    expect(result.stats.estimatedTokens).toBeLessThanOrEqual(8000);
+  });
+
+  it('uses prior user requests only for the mechanical fallback', () => {
+    makeHermesDatabase(home, [
+      { content: 'Orchid capsule tenant isolation', target: 'memory', project: 'CPA' },
+      { content: 'unrelated database note', target: 'memory', project: 'CPA' },
+    ]);
+    const retriever = new HermesMemoryRetriever(home);
+    expect(retriever.retrieve('continue', root).memories).toEqual([]);
+    const fallback = retriever.retrieve('continue', root, { contextText: 'Implement Orchid capsule' });
+    expect(fallback.memories.map(memory => memory.rule)).toEqual(['Orchid capsule tenant isolation']);
+    const zeroHit = retriever.retrieve('continue', root, { queryGroups: [['absent subject']], contextText: 'Implement Orchid capsule' });
+    expect(zeroHit.stats.keywordFallback).toBe('zero-hit');
+    expect(zeroHit.memories.map(memory => memory.rule)).toEqual(['Orchid capsule tenant isolation']);
+    // A successful model plan stays authoritative; an empty plan never broadens through context.
+    expect(retriever.retrieve('continue', root, { queryGroups: [], contextText: 'Implement Orchid capsule' }).memories).toEqual([]);
   });
 
   it('quotes lexical queries, bounds input and honors cancellation/zero budgets', () => {

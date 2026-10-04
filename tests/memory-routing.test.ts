@@ -163,6 +163,39 @@ describe('task-relevant memory routing', () => {
     expect(result?.memoryRetrieval?.candidates).toBe(1);
   });
 
+  it('warms the keyword path once per idle window without task data and logs bounded context stats', async () => {
+    put(path.join(home, '.pi/agent/cliproxyapi.json'), JSON.stringify({ baseUrl: 'https://cpa.fixture.invalid', apiKey: 'FAKE_CPA' }));
+    const warmups: any[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const nav = new JevNavigator(root, { apiKey: 'FAKE_JEV', enableSkills: false, enableSubsystems: false, logDecisions: true }, home, (async (url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (String(url).includes(':generateContent') && body.generationConfig.maxOutputTokens === 1) {
+        warmups.push({ body, headers: init?.headers }); await gate; return Response.json({});
+      }
+      if (String(url).includes(':generateContent')) return Response.json({ candidates: [{ content: { parts: [{ text: '{"needsMemory":false,"subject":"","terms":[],"queryGroups":[],"memoryTargets":[]}' }] } }] });
+      return Response.json(responseFor(body));
+    }) as typeof fetch);
+    const t0 = 1_000_000_000_000;
+    expect(nav.warmKeywordPath(t0)).toBe(true);
+    expect(nav.warmKeywordPath(t0 + 200_000)).toBe(false); // one in flight
+    release(); await new Promise(resolve => setTimeout(resolve, 0));
+    expect(nav.warmKeywordPath(t0 + 1_000)).toBe(false); // still inside the idle window
+    expect(warmups).toHaveLength(1);
+    expect(warmups[0].headers['X-Session-ID']).toBe('jev-keyword-extractor');
+    expect(JSON.stringify(warmups[0].body.contents)).not.toContain('SECRET_TASK');
+    await nav.evaluatePrompt('SECRET_TASK follow-up', [], { sessionId: 'warm-context' },
+      { recentContext: [{ role: 'user', text: 'Implement Orchid capsule' }, { role: 'assistant', text: 'Done' }] });
+    expect(nav.warmKeywordPath(Date.now() + 1_000)).toBe(false); // real extraction counts as activity
+    expect(nav.warmKeywordPath(Date.now() + 120_000)).toBe(true);
+    const slug = `--${root.replace(/^\/+/, '').replace(/\/+/g, '-')}--`;
+    const entry = JSON.parse(fs.readFileSync(path.join(home, '.pi/agent/jev-sessions', slug, 'warm-context.jsonl'), 'utf8').trim());
+    expect(entry.task_context).toEqual({ turns: 1, messages: 2, chars: 'Implement Orchid capsule'.length + 4, anchor: false });
+    expect(JSON.stringify(entry)).not.toContain('Implement Orchid capsule');
+    const disabled = new JevNavigator(root, { apiKey: 'FAKE_JEV', enableKeywordExpansion: false, logDecisions: false }, home, (async () => Response.json({})) as typeof fetch);
+    expect(disabled.warmKeywordPath(t0)).toBe(false);
+  });
+
   it('redacts configured CPA credentials from default telemetry as well as routing requests', async () => {
     put(path.join(home, '.pi/agent/cliproxyapi.json'), JSON.stringify({ baseUrl: 'https://cpa.fixture.invalid', apiKey: 'CPA_LOG_SECRET' }));
     const nav = new JevNavigator(root, { apiKey: 'JEV_LOG_SECRET', enableKeywordExpansion: false,
